@@ -37,7 +37,9 @@ type Task struct {
 type TaskRepository interface {
 	CreateTask(task *Task) error
 	GetTask(id string) (*Task, error)
+	GetTaskByWorkflowID(workflowID string) (*Task, error)
 	ListTasksByTags(tags []string, status TaskStatus) ([]*Task, error)
+	UpdateTask(task *Task) error
 	UpdateTaskStatus(id string, status TaskStatus, result string) error
 }
 
@@ -110,6 +112,25 @@ func (r *SQLiteTaskRepository) GetTask(id string) (*Task, error) {
 	return &t, nil
 }
 
+func (r *SQLiteTaskRepository) GetTaskByWorkflowID(workflowID string) (*Task, error) {
+	query := `SELECT id, workflow_id, status, target_tags, payload, result, created_at, updated_at FROM tasks WHERE workflow_id = ?`
+	row := r.db.QueryRow(query, workflowID)
+
+	var t Task
+	var tagsJSON string
+	var result sql.NullString
+	if err := row.Scan(&t.ID, &t.WorkflowID, &t.Status, &tagsJSON, &t.Payload, &result, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	_ = json.Unmarshal([]byte(tagsJSON), &t.TargetTags)
+	t.Result = result.String
+	return &t, nil
+}
+
 // ListTasksByTags 實作標籤過濾邏輯，這部分與特定查詢條件需保持一致
 func (r *SQLiteTaskRepository) ListTasksByTags(tags []string, status TaskStatus) ([]*Task, error) {
 	query := `SELECT id, workflow_id, status, target_tags, payload, result, created_at, updated_at 
@@ -139,6 +160,13 @@ func (r *SQLiteTaskRepository) ListTasksByTags(tags []string, status TaskStatus)
 		}
 	}
 	return tasks, nil
+}
+
+func (r *SQLiteTaskRepository) UpdateTask(task *Task) error {
+	tagsJSON, _ := json.Marshal(task.TargetTags)
+	query := `UPDATE tasks SET status = ?, target_tags = ?, result = ?, payload = ?, updated_at = ? WHERE id = ?`
+	_, err := r.db.Exec(query, task.Status, string(tagsJSON), task.Result, task.Payload, time.Now(), task.ID)
+	return err
 }
 
 func (r *SQLiteTaskRepository) UpdateTaskStatus(id string, status TaskStatus, result string) error {

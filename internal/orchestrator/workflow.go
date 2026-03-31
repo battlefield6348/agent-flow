@@ -29,7 +29,6 @@ func NewWorkflowEngine(repo repository.TaskRepository, gitlab *gitlab.Adapter, p
 	}
 }
 
-// Start 啟動工作流引擎輪詢
 func (e *WorkflowEngine) Start(pollInterval time.Duration) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -49,39 +48,68 @@ func (e *WorkflowEngine) Start(pollInterval time.Duration) {
 }
 
 func (e *WorkflowEngine) synchronizeWorkflow() error {
-	// 1. 查詢本地所有正在進行中的任務 (這裡可以用 repository.ListTasksByTags 如果有分頁或全查的功能)
-	// 暫時以簡化版全查流程 (在 Repo 中我們定義了 ListTasksByTags，
-	// 此處我們可以透過查詢 IDLE, IN_PROGRESS 等狀態來決定同步動作)
-
-	// 2. 輪詢 GitLab 的 MR 狀態，此處示範邏輯：
-	//    a. 發現新 MR 且無對應 Local 任務 -> 建立 Coder 任務
-	//    b. Coder 已回報推送成功 -> 監控 CI Status
-	//    c. CI Status = Success -> 指派 Reviewer 任務
-
 	mrs, err := e.gitlab.ListProjectMRs(e.project, "opened", nil)
 	if err != nil {
 		return fmt.Errorf("failed to list project MRs: %w", err)
 	}
 
 	for _, mr := range mrs {
-		// 檢查 CI 狀態來轉化工作流
-		status, _ := e.gitlab.GetMRPipelineStatus(e.project, mr.IID)
-
-		if status == "success" {
-			// 如果 CI 過關且本地沒完成過 review，指派 Reviewer
-			// 此處可以與 TaskRepository.ListTasksByTags 進一步整合判斷是否已存在
-			log.Printf("[Workflow] MR %d CI Passed. Ready for Reviewer matching.", mr.IID)
-
-			// 範例：建立 Review 任務
-			// _ = e.repo.CreateTask(&repository.Task{
-			// 	WorkflowID: fmt.Sprintf("mr-%d", mr.IID),
-			// 	Status:     repository.StatusReadyForReview,
-			// 	TargetTags: []string{"reviewer"},
-			// })
+		workflowID := fmt.Sprintf("mr-%d", mr.IID)
+		task, err := e.repo.GetTaskByWorkflowID(workflowID)
+		if err != nil {
+			return err
 		}
+
+		// 1. 如果是全新的 MR (且為 Draft 或有標籤)，分配給 Coder
+		if task == nil {
+			if mr.Draft || e.hasLabel(mr.Labels, "bot-request") {
+				log.Printf("[Workflow] New MR detected (%d). Creating Coder task.", mr.IID)
+				err := e.repo.CreateTask(&repository.Task{
+					WorkflowID: workflowID,
+					Status:     repository.StatusIdle,
+					TargetTags: []string{"coder", "golang", "dev"},
+					Payload:    fmt.Sprintf("MR_IID:%d, Branch:%s", mr.IID, mr.SourceBranch),
+				})
+				if err != nil {
+					log.Printf("[Workflow] failed to create task: %v", err)
+				}
+			}
+			continue
+		}
+
+		// 2. 如果任務處理中，監控 CI 狀態進行「接棒」
+		e.handleTaskTransition(task, mr.IID)
 	}
 
 	return nil
+}
+
+func (e *WorkflowEngine) handleTaskTransition(task *repository.Task, mrIID int) {
+	// 如果任務處於「等待 CI」或「正在進行」，我們檢查最新 Pipeline
+	if task.Status == repository.StatusInProgress || task.Status == repository.StatusAwaitingCI {
+		status, _ := e.gitlab.GetMRPipelineStatus(e.project, mrIID)
+
+		if status == "success" {
+			log.Printf("[Workflow] MR %d CI Passed. Transitioning to Reviewer.", mrIID)
+
+			// 更新標籤為 reviewer，狀態設為 IDLE 重啟領取流程
+			task.Status = repository.StatusIdle
+			task.TargetTags = []string{"reviewer", "security"}
+			err := e.repo.UpdateTask(task)
+			if err != nil {
+				log.Printf("[Workflow] failed to update task target tags: %v", err)
+			}
+		}
+	}
+}
+
+func (e *WorkflowEngine) hasLabel(labels []string, target string) bool {
+	for _, l := range labels {
+		if l == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *WorkflowEngine) Stop() {
