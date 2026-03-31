@@ -14,13 +14,14 @@ type Config struct {
 }
 
 type CollaboratorConfig struct {
-	ID     string            `yaml:"id"`
-	Name   string            `yaml:"name"`
-	Cmd    string            `yaml:"cmd"`
-	Args   []string          `yaml:"args"`
-	Tags   []string          `yaml:"tags"`
-	Skills []string          `yaml:"skills"`
-	Env    map[string]string `yaml:"env"`
+	ID                 string            `yaml:"id"`
+	Name               string            `yaml:"name"`
+	Cmd                string            `yaml:"cmd"`
+	Args               []string          `yaml:"args"`
+	Tags               []string          `yaml:"tags"`
+	Skills             []string          `yaml:"skills"`
+	InitialInstruction string            `yaml:"initial_instruction"` // 新增自動引導指令
+	Env                map[string]string `yaml:"env"`
 }
 
 func LoadConfig(path string) (*Config, error) {

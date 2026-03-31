@@ -39,7 +39,13 @@ func main() {
 	}()
 
 	manager := orchestrator.NewWorkerManager(cfg.Collaborators)
-	go manager.StartAll()
+	// 🟢 分配啟動，每位 Worker 隔 10 秒啟動一個
+	go func() {
+		for _, w := range manager.Workers {
+			w.Start()
+			time.Sleep(10 * time.Second)
+		}
+	}()
 
 	fmt.Println("\n====================================================")
 	fmt.Println("🚀 Gemini Collaborator Base Center Ready")
@@ -86,7 +92,19 @@ func main() {
 				}
 
 			case "tasks":
-				fmt.Println("Current Task List (Feature Coming Soon)")
+				tasks, err := repo.ListTasksByTags(nil, "")
+				if err != nil {
+					fmt.Printf("Error listing tasks: %v\n", err)
+					continue
+				}
+				fmt.Println("\nID | Tags | Status | Payload")
+				fmt.Println("---|------|--------|--------")
+				for _, t := range tasks {
+					status := string(t.Status)
+					fmt.Printf("%s | %v | %s | %s\n", t.ID[:8], t.TargetTags, status, t.Payload)
+				}
+				fmt.Println("")
+
 			case "exit", "quit":
 				sigChan <- syscall.SIGTERM
 				return

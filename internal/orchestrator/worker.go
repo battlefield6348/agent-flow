@@ -1,139 +1,94 @@
 package orchestrator
 
 import (
-	"context"
-	"fmt"
-	"io"
-	"log"
-	"os"
-	"os/exec"
-	"sync"
-	"time"
+"fmt"
+"os"
+"os/exec"
+"time"
 )
 
 type Worker struct {
-	ID        string
-	Name      string
-	Config    CollaboratorConfig
-	Tags      []string
-	Cmd       *exec.Cmd
-	IsRunning bool
-	stdin     io.WriteCloser // 用於在啟動後幫使用者輸入指令
-	mu        sync.Mutex
+	Config CollaboratorConfig
+	cmd    *exec.Cmd // 🔴 必須保存 cmd 實例
+	stopCh chan struct{}
+}
+
+func NewWorker(cfg CollaboratorConfig) *Worker {
+	return &Worker{
+		Config: cfg,
+		stopCh: make(chan struct{}),
+	}
+}
+
+func (w *Worker) Start() {
+	go w.runLoop()
+}
+
+func (w *Worker) runLoop() {
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		default:
+			w.runProcess()
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+func (w *Worker) runProcess() {
+	args := append([]string{}, w.Config.Args...)
+	if w.Config.InitialInstruction != "" {
+		args = append(args, "--prompt", w.Config.InitialInstruction)
+	}
+
+	w.cmd = exec.Command(w.Config.Cmd, args...) // 🔴 分派給成員變數
+	w.cmd.Env = os.Environ()
+	for k, v := range w.Config.Env {
+		w.cmd.Env = append(w.cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	w.cmd.Stdout = os.Stdout
+	w.cmd.Stderr = os.Stderr
+
+	if err := w.cmd.Start(); err != nil {
+		fmt.Printf("[%s] failed to start: %v\n", w.Config.ID, err)
+		return
+	}
+
+	fmt.Printf("%s [Worker:%s] Engine started\n", time.Now().Format("2006/01/02 15:04:05"), w.Config.ID)
+
+	_ = w.cmd.Wait()
+}
+
+func (w *Worker) Stop() {
+	close(w.stopCh)
+	if w.cmd != nil && w.cmd.Process != nil {
+		fmt.Printf("Killing process for %s...\n", w.Config.ID)
+		w.cmd.Process.Signal(os.Interrupt) // 🟢 正確發送訊號
+	}
 }
 
 type WorkerManager struct {
-	workers []*Worker
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
+	Workers []*Worker
 }
 
 func NewWorkerManager(configs []CollaboratorConfig) *WorkerManager {
-	ctx, cancel := context.WithCancel(context.Background())
-	mgr := &WorkerManager{
-		ctx:    ctx,
-		cancel: cancel,
+	var workers []*Worker
+	for _, cfg := range configs {
+		workers = append(workers, NewWorker(cfg))
 	}
-
-	for _, c := range configs {
-		mgr.workers = append(mgr.workers, &Worker{
-			ID:   c.ID,
-			Name: c.Name,
-			Config: c,
-			Tags: c.Tags,
-		})
-	}
-
-	return mgr
+	return &WorkerManager{Workers: workers}
 }
 
 func (m *WorkerManager) StartAll() {
-	for _, w := range m.workers {
-		m.wg.Add(1)
-		go m.runWorkerWithRestart(w)
+	for _, w := range m.Workers {
+		w.Start()
 	}
-}
-
-func (m *WorkerManager) runWorkerWithRestart(w *Worker) {
-	defer m.wg.Done()
-
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		default:
-			if err := m.startWorker(w); err != nil {
-				log.Printf("[Worker:%s] failed to start: %v, retrying in 5s...", w.ID, err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			// 監控子程序退出
-			err := w.Cmd.Wait()
-			w.mu.Lock()
-			w.IsRunning = false
-			if w.stdin != nil {
-				w.stdin.Close()
-			}
-			w.mu.Unlock()
-
-			if m.ctx.Err() != nil {
-				log.Printf("[Worker:%s] stopped due to system shutdown", w.ID)
-				return
-			}
-
-			log.Printf("[Worker:%s] process exited with error: %v. Restarting in 3s...", w.ID, err)
-			time.Sleep(3 * time.Second)
-		}
-	}
-}
-
-func (m *WorkerManager) startWorker(w *Worker) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	cmd := exec.CommandContext(m.ctx, w.Config.Cmd, w.Config.Args...)
-	
-	// 設定 Stdin 以便啟動後注入指令
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	w.stdin = stdin
-
-	cmd.Env = os.Environ()
-	for k, v := range w.Config.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	w.Cmd = cmd
-	w.IsRunning = true
-
-	// 🚀 自動注入技能指令：這相當於在啟動後幫你打入 "skills use [skill_name]"
-	go func() {
-		// 稍微等待 Agent 初始化
-		time.Sleep(2 * time.Second)
-		for _, skill := range w.Config.Skills {
-			log.Printf("[Worker:%s] Auto-loading skill: %s", w.ID, skill)
-			// 注意：根據 CLI 版本，語法可能是 "skill use" 或直接叫技能名，
-			// 這裡我們暫定採用通用的啟動溝通模式
-			fmt.Fprintf(w.stdin, "skills use %s\n", skill)
-		}
-	}()
-
-	log.Printf("[Worker:%s] successfully started", w.ID)
-	return nil
 }
 
 func (m *WorkerManager) StopAll() {
-	m.cancel()
-	m.wg.Wait()
+	for _, w := range m.Workers {
+		w.Stop()
+	}
 }

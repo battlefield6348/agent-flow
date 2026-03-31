@@ -15,11 +15,11 @@ func RegisterMCPTools(server *mcp.Server, repo repository.TaskRepository) {
 	h := &MCPHandler{repo: repo}
 
 	// 1. 列出可領取的任務
-	server.RegisterTool("list_tasks", h.handleListTasks)
+	server.AddTool("list_tasks", "List tasks matching tags", h.handleListTasks)
 	// 2. 領取任務
-	server.RegisterTool("claim_task", h.handleClaimTask)
+	server.AddTool("claim_task", "Claim a task to work on", h.handleClaimTask)
 	// 3. 完成任務
-	server.RegisterTool("finish_task", h.handleFinishTask)
+	server.AddTool("finish_task", "Finish a task and report result", h.handleFinishTask)
 }
 
 func (h *MCPHandler) handleListTasks(params json.RawMessage) (interface{}, error) {

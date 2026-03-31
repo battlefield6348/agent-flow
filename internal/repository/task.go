@@ -133,10 +133,15 @@ func (r *SQLiteTaskRepository) GetTaskByWorkflowID(workflowID string) (*Task, er
 
 // ListTasksByTags 實作標籤過濾邏輯，這部分與特定查詢條件需保持一致
 func (r *SQLiteTaskRepository) ListTasksByTags(tags []string, status TaskStatus) ([]*Task, error) {
-	query := `SELECT id, workflow_id, status, target_tags, payload, result, created_at, updated_at 
-	          FROM tasks WHERE status = ?`
+	query := `SELECT id, workflow_id, status, target_tags, payload, result, created_at, updated_at FROM tasks WHERE 1=1`
+	args := []interface{}{}
 
-	rows, err := r.db.Query(query, status)
+	if status != "" {
+		query += " AND status = ?"
+		args = append(args, string(status))
+	}
+
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +159,7 @@ func (r *SQLiteTaskRepository) ListTasksByTags(tags []string, status TaskStatus)
 		_ = json.Unmarshal([]byte(tagsJSON), &t.TargetTags)
 		t.Result = result.String
 
-		// 簡單的標籤子集匹配邏輯
-		if r.matchTags(t.TargetTags, tags) {
+		if len(tags) == 0 || r.matchTags(t.TargetTags, tags) {
 			tasks = append(tasks, &t)
 		}
 	}

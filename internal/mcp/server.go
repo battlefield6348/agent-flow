@@ -1,93 +1,77 @@
 package mcp
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"sync"
+"encoding/json"
+"fmt"
+"net/http"
+"sync"
 )
 
-// MCPRequest JSON-RPC 2.0 基礎結構
-type MCPRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-	ID      interface{}     `json:"id"`
+type Tool struct {
+	Name        string
+	Description string
+	Handler     func(params json.RawMessage) (interface{}, error)
 }
-
-type MCPResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   interface{} `json:"error,omitempty"`
-	ID      interface{} `json:"id"`
-}
-
-type ToolHandler func(params json.RawMessage) (interface{}, error)
 
 type Server struct {
-	tools map[string]ToolHandler
+	tools map[string]Tool
 	mu    sync.RWMutex
 }
 
 func NewServer() *Server {
 	return &Server{
-		tools: make(map[string]ToolHandler),
+		tools: make(map[string]Tool),
 	}
 }
 
-func (s *Server) RegisterTool(name string, handler ToolHandler) {
+func (s *Server) AddTool(name, desc string, handler func(json.RawMessage) (interface{}, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tools[name] = handler
-}
-
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req MCPRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
-		return
-	}
-
-	res := s.handleRequest(req)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-func (s *Server) handleRequest(req MCPRequest) MCPResponse {
-	s.mu.RLock()
-	handler, ok := s.tools[req.Method]
-	s.mu.RUnlock()
-
-	if !ok {
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   map[string]string{"code": "-32601", "message": "Method not found"},
-		}
-	}
-
-	result, err := handler(req.Params)
-	if err != nil {
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   map[string]string{"code": "-32000", "message": err.Error()},
-		}
-	}
-
-	return MCPResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result:  result,
-	}
+	s.tools[name] = Tool{Name: name, Description: desc, Handler: handler}
 }
 
 func (s *Server) Start(addr string) error {
-	fmt.Printf("MCP Server listening on %s...\n", addr)
-	return http.ListenAndServe(addr, s)
+	http.HandleFunc("/mcp/tools", s.handleListTools)
+	http.HandleFunc("/mcp/call", s.handleCallTool)
+	
+	fmt.Printf("[MCP] Server listening on %s...\n", addr)
+	return http.ListenAndServe(addr, nil)
+}
+
+func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	json.NewEncoder(w).Encode(s.tools)
+}
+
+func (s *Server) handleCallTool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	fmt.Printf("[MCP] Agent calling tool: %s\n", req.Name)
+
+	s.mu.RLock()
+	tool, ok := s.tools[req.Name]
+	s.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "tool not found", http.StatusNotFound)
+		return
+	}
+
+	res, err := tool.Handler(req.Args)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(res)
 }
