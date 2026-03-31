@@ -1,25 +1,24 @@
 package main
 
 import (
+"bufio"
 "fmt"
 "log"
 "os"
 "os/signal"
+"strings"
 "syscall"
 "time"
 
-"gemini-collaborator-go/internal/gitlab"
 "gemini-collaborator-go/internal/mcp"
 "gemini-collaborator-go/internal/orchestrator"
 "gemini-collaborator-go/internal/repository"
 )
 
 func main() {
-	// 1. 載入設定檔 (優先嘗試正式 config.yaml)
 	cfgPath := "configs/config.yaml"
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		cfgPath = "configs/config.yaml.example"
-		log.Printf("[Info] Config file not found, using example: %s", cfgPath)
 	}
 
 	cfg, err := orchestrator.LoadConfig(cfgPath)
@@ -27,51 +26,78 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	fmt.Printf("Orchestrator starting for project ID: %s...\n", cfg.GitLab.ProjectID)
-
-	// 2. 初始化 SQLite Repository
 	repo, err := repository.NewSQLiteTaskRepository(cfg.Database.Path)
 	if err != nil {
 		log.Fatalf("failed to initialize repository: %v", err)
 	}
 
-	// 3. 初始化並啟動 MCP Server
 	mcpServer := mcp.NewServer()
 	orchestrator.RegisterMCPTools(mcpServer, repo)
 	
 	go func() {
-		if err := mcpServer.Start(":8080"); err != nil {
-			log.Fatalf("MCP Server failed: %v", err)
-		}
+		_ = mcpServer.Start(":8080")
 	}()
 
-	// 4. 初始化 GitLab Adapter
-	gitlabAdapter, err := gitlab.NewAdapter(cfg.GitLab.BaseURL, cfg.GitLab.Token)
-	if err != nil {
-		log.Printf("[Warning] GitLab connection failed: %v. Continuing offline.", err)
-	}
-
-	// 5. 初始化並啟動 Workflow Engine
-	if gitlabAdapter != nil && cfg.GitLab.ProjectID != "" {
-		engine := orchestrator.NewWorkflowEngine(repo, gitlabAdapter, cfg.GitLab.ProjectID)
-		go engine.Start(time.Minute)
-	}
-
-	// 6. 初始化 Worker 管理器 (啟動設定中的子程序)
 	manager := orchestrator.NewWorkerManager(cfg.Collaborators)
+	go manager.StartAll()
 
-	// 7. 監聽系統訊號進行優雅停機
+	fmt.Println("\n====================================================")
+	fmt.Println("🚀 Gemini Collaborator Base Center Ready")
+	fmt.Println("====================================================")
+	fmt.Println("Commands: ")
+	fmt.Println("  add <tags> <payload> : Dispatch a manual task")
+	fmt.Println("  tasks                : List all tasks status")
+	fmt.Println("  exit                 : Shutdown orchestrator")
+	fmt.Println("====================================================")
+
+	reader := bufio.NewReader(os.Stdin)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// 8. 啟動所有子程序
-	go manager.StartAll()
+	go func() {
+		for {
+			fmt.Print("(collaborator) > ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+			if input == "" {
+				continue
+			}
 
-	// 等待訊號
-	sig := <-sigChan
-	fmt.Printf("\nReceived signal %v. Cleaning up...\n", sig)
+			parts := strings.SplitN(input, " ", 3)
+			cmd := parts[0]
 
+			switch cmd {
+			case "add":
+				if len(parts) < 3 {
+					fmt.Println("Usage: add <tags> <payload> (tags separate by comma)")
+					continue
+				}
+				tags := strings.Split(parts[1], ",")
+				err := repo.CreateTask(&repository.Task{
+					WorkflowID: fmt.Sprintf("manual-%d", time.Now().Unix()),
+					Status:     repository.StatusIdle,
+					TargetTags: tags,
+					Payload:    parts[2],
+				})
+				if err != nil {
+					fmt.Printf("Error adding task: %v\n", err)
+				} else {
+					fmt.Println("Task dispatched successfully.")
+				}
+
+			case "tasks":
+				fmt.Println("Current Task List (Feature Coming Soon)")
+			case "exit", "quit":
+				sigChan <- syscall.SIGTERM
+				return
+			default:
+				fmt.Println("Unknown command. Try: add, tasks, exit")
+			}
+		}
+	}()
+
+	<-sigChan
+	fmt.Println("\nShutting down...")
 	manager.StopAll()
-	fmt.Println("Orchestrator shutdown completed successfully.")
 	os.Exit(0)
 }

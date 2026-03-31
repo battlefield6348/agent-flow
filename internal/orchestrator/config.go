@@ -1,18 +1,12 @@
 package orchestrator
 
 import (
-	"os"
+"os"
 
-	"gopkg.in/yaml.v3"
+"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	GitLab struct {
-		BaseURL      string `yaml:"base_url"`
-		Token        string `yaml:"token"`
-		ProjectID    string `yaml:"project_id"`
-		PollInterval string `yaml:"poll_interval"`
-	} `yaml:"gitlab"`
 	Database struct {
 		Path string `yaml:"path"`
 	} `yaml:"database"`
@@ -25,7 +19,7 @@ type CollaboratorConfig struct {
 	Cmd    string            `yaml:"cmd"`
 	Args   []string          `yaml:"args"`
 	Tags   []string          `yaml:"tags"`
-	Skills []string          `yaml:"skills"` // 指定此 Agent 具備哪些專屬技能
+	Skills []string          `yaml:"skills"`
 	Env    map[string]string `yaml:"env"`
 }
 
