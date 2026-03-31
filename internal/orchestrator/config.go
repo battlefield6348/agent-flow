@@ -20,12 +20,13 @@ type Config struct {
 }
 
 type CollaboratorConfig struct {
-	ID   string            `yaml:"id"`
-	Name string            `yaml:"name"`
-	Cmd  string            `yaml:"cmd"`
-	Args []string          `yaml:"args"`
-	Tags []string          `yaml:"tags"`
-	Env  map[string]string `yaml:"env"`
+	ID     string            `yaml:"id"`
+	Name   string            `yaml:"name"`
+	Cmd    string            `yaml:"cmd"`
+	Args   []string          `yaml:"args"`
+	Tags   []string          `yaml:"tags"`
+	Skills []string          `yaml:"skills"` // 指定此 Agent 具備哪些專屬技能
+	Env    map[string]string `yaml:"env"`
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -1,0 +1,18 @@
+# Binary
+collaborator
+
+# Configs
+configs/config.yaml
+
+# Database
+db/*.db
+db/*.db-journal
+
+# Go
+vendor/
+
+# Temporary & IDE
+*.log
+.idea/
+.vscode/
+.DS_Store

@@ -36,17 +36,16 @@ func NewWorkerManager(configs []CollaboratorConfig) *WorkerManager {
 
 	for _, c := range configs {
 		mgr.workers = append(mgr.workers, &Worker{
-			ID:     c.ID,
-			Name:   c.Name,
+			ID:   c.ID,
+			Name: c.Name,
 			Config: c,
-			Tags:   c.Tags,
+			Tags: c.Tags,
 		})
 	}
 
 	return mgr
 }
 
-// StartAll 啟動所有配置中的子程序
 func (m *WorkerManager) StartAll() {
 	for _, w := range m.workers {
 		m.wg.Add(1)
@@ -89,17 +88,20 @@ func (m *WorkerManager) startWorker(w *Worker) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 這裡使用 os/exec 來啟動子程序
-	cmd := exec.CommandContext(m.ctx, w.Config.Cmd, w.Config.Args...)
+	// 根據 Config 的 Skills 設定動態追加參數
+	finalArgs := append([]string{}, w.Config.Args...)
+	for _, skill := range w.Config.Skills {
+		finalArgs = append(finalArgs, "--skill", skill)
+	}
 
-	// 注入環境變數
+	cmd := exec.CommandContext(m.ctx, w.Config.Cmd, finalArgs...)
+	
 	cmd.Env = os.Environ()
 	for k, v := range w.Config.Env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// 暫時將子程序的輸出導向到主程序的 stdout (用於調試)
-	// 未來在 MCP 實作時，這部分會被重導向至我們內部的通訊管道
+	// 目前為簡化演示，依舊將輸出導向全域 Stdout/Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -109,7 +111,7 @@ func (m *WorkerManager) startWorker(w *Worker) error {
 
 	w.Cmd = cmd
 	w.IsRunning = true
-	log.Printf("[Worker:%s] successfully started: %s %v", w.ID, w.Config.Cmd, w.Config.Args)
+	log.Printf("[Worker:%s] successfully started with skills %v", w.ID, w.Config.Skills)
 	return nil
 }
 
