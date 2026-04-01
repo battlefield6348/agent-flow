@@ -4,14 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"gemini-collaborator-go/internal/mcp"
 	"gemini-collaborator-go/internal/orchestrator"
-	"gemini-collaborator-go/internal/repository"
 	"gemini-collaborator-go/internal/telegram"
 )
 
@@ -26,18 +23,7 @@ func main() {
 		log.Printf("Warning: Failed to load config from %s, using defaults: %v", *configPath, err)
 	}
 
-	// 2. 初始化 SQLite 資料庫
-	dbPath := "collaborator.db"
-	if cfg != nil && cfg.Database.Path != "" {
-		dbPath = cfg.Database.Path
-	}
-	repo, err := repository.NewSQLiteTaskRepository(dbPath)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	fmt.Printf("[Collaborator] Connected to database: %s\n", dbPath)
-
-	// 3. 啟動背景 Workers (Collaborators)
+	// 2. 啟動背景 Workers (Collaborators)
 	var manager *orchestrator.WorkerManager
 	logDir := "./logs"
 	if cfg != nil && cfg.Logs.Path != "" {
@@ -50,7 +36,7 @@ func main() {
 		fmt.Printf("[Collaborator] %d workers started in tmux sessions.\n", len(cfg.Collaborators))
 	}
 
-	// 4. 啟動 Telegram Bot (如果設定存在)
+	// 3. 啟動 Telegram Bot (如果設定存在)
 	if cfg != nil && cfg.Telegram.Token != "" {
 		tgBot, err := telegram.NewBot(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs, cfg.Collaborators)
 		if err != nil {
@@ -77,6 +63,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 5. 保持主程序運行
+	// 4. 保持主程序運行
+	fmt.Println("[Collaborator] Orchestrator is running. Press Ctrl+C to stop.")
 	select {}
 }
