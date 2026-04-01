@@ -1,121 +1,82 @@
 package main
 
 import (
-"bufio"
-"fmt"
-"log"
-"os"
-"os/signal"
-"strings"
-"syscall"
-"time"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
-"gemini-collaborator-go/internal/mcp"
-"gemini-collaborator-go/internal/orchestrator"
-"gemini-collaborator-go/internal/repository"
+	"gemini-collaborator-go/internal/mcp"
+	"gemini-collaborator-go/internal/orchestrator"
+	"gemini-collaborator-go/internal/repository"
+	"gemini-collaborator-go/internal/telegram"
 )
 
 func main() {
-	cfgPath := "configs/config.yaml"
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		cfgPath = "configs/config.yaml.example"
-	}
+	// 0. 解析命令列參數
+	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
+	flag.Parse()
 
-	cfg, err := orchestrator.LoadConfig(cfgPath)
+	// 1. 載入設定檔
+	cfg, err := orchestrator.LoadConfig(*configPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		log.Printf("Warning: Failed to load config from %s, using defaults: %v", *configPath, err)
 	}
 
-	repo, err := repository.NewSQLiteTaskRepository(cfg.Database.Path)
+	// 2. 初始化 SQLite 資料庫
+	dbPath := "collaborator.db"
+	if cfg != nil && cfg.Database.Path != "" {
+		dbPath = cfg.Database.Path
+	}
+	repo, err := repository.NewSQLiteTaskRepository(dbPath)
 	if err != nil {
-		log.Fatalf("failed to initialize repository: %v", err)
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	fmt.Printf("[Collaborator] Connected to database: %s\n", dbPath)
+
+	// 3. 啟動背景 Workers (Collaborators)
+	var manager *orchestrator.WorkerManager
+	logDir := "./logs"
+	if cfg != nil && cfg.Logs.Path != "" {
+		logDir = cfg.Logs.Path
 	}
 
-	mcpServer := mcp.NewServer()
-	orchestrator.RegisterMCPTools(mcpServer, repo)
-	
-	go func() {
-		_ = mcpServer.Start(":8080")
-	}()
+	if cfg != nil && len(cfg.Collaborators) > 0 {
+		manager = orchestrator.NewWorkerManager(cfg.Collaborators, logDir)
+		manager.StartAll()
+		fmt.Printf("[Collaborator] %d workers started in tmux sessions.\n", len(cfg.Collaborators))
+	}
 
-	manager := orchestrator.NewWorkerManager(cfg.Collaborators)
-	// 🟢 分配啟動，每位 Worker 隔 10 秒啟動一個
-	go func() {
-		for _, w := range manager.Workers {
-			w.Start()
-			time.Sleep(10 * time.Second)
+	// 4. 啟動 Telegram Bot (如果設定存在)
+	if cfg != nil && cfg.Telegram.Token != "" {
+		tgBot, err := telegram.NewBot(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs, cfg.Collaborators)
+		if err != nil {
+			log.Printf("Failed to initialize Telegram Bot: %v", err)
+		} else {
+			go tgBot.Start()
+			
+			// 啟動日誌轉發
+			poller := telegram.NewLogPoller(tgBot, logDir, cfg.Telegram.AllowedChatIDs)
+			poller.Start()
+			fmt.Println("[Collaborator] Telegram Bot and Log Poller started.")
 		}
-	}()
+	}
 
-	fmt.Println("\n====================================================")
-	fmt.Println("🚀 Gemini Collaborator Base Center Ready")
-	fmt.Println("====================================================")
-	fmt.Println("Commands: ")
-	fmt.Println("  add <tags> <payload> : Dispatch a manual task")
-	fmt.Println("  tasks                : List all tasks status")
-	fmt.Println("  exit                 : Shutdown orchestrator")
-	fmt.Println("====================================================")
-
-	reader := bufio.NewReader(os.Stdin)
+	// 優化：優雅地關閉
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
-		for {
-			fmt.Print("(collaborator) > ")
-			input, _ := reader.ReadString('\n')
-			input = strings.TrimSpace(input)
-			if input == "" {
-				continue
-			}
-
-			parts := strings.SplitN(input, " ", 3)
-			cmd := parts[0]
-
-			switch cmd {
-			case "add":
-				if len(parts) < 3 {
-					fmt.Println("Usage: add <tags> <payload> (tags separate by comma)")
-					continue
-				}
-				tags := strings.Split(parts[1], ",")
-				err := repo.CreateTask(&repository.Task{
-					WorkflowID: fmt.Sprintf("manual-%d", time.Now().Unix()),
-					Status:     repository.StatusIdle,
-					TargetTags: tags,
-					Payload:    parts[2],
-				})
-				if err != nil {
-					fmt.Printf("Error adding task: %v\n", err)
-				} else {
-					fmt.Println("Task dispatched successfully.")
-				}
-
-			case "tasks":
-				tasks, err := repo.ListTasksByTags(nil, "")
-				if err != nil {
-					fmt.Printf("Error listing tasks: %v\n", err)
-					continue
-				}
-				fmt.Println("\nID | Tags | Status | Payload")
-				fmt.Println("---|------|--------|--------")
-				for _, t := range tasks {
-					status := string(t.Status)
-					fmt.Printf("%s | %v | %s | %s\n", t.ID[:8], t.TargetTags, status, t.Payload)
-				}
-				fmt.Println("")
-
-			case "exit", "quit":
-				sigChan <- syscall.SIGTERM
-				return
-			default:
-				fmt.Println("Unknown command. Try: add, tasks, exit")
-			}
+		<-sigChan
+		fmt.Println("\nShutting down...")
+		if manager != nil {
+			manager.StopAll()
 		}
+		os.Exit(0)
 	}()
 
-	<-sigChan
-	fmt.Println("\nShutting down...")
-	manager.StopAll()
-	os.Exit(0)
+	// 5. 保持主程序運行
+	select {}
 }
