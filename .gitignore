@@ -12,7 +12,8 @@ db/*.db-journal
 vendor/
 
 # Temporary & IDE
-*.log
+logs/
+output/
 .idea/
 .vscode/
 .DS_Store

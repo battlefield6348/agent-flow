@@ -18,7 +18,7 @@ run:
 clean:
 	@echo "Cleaning up..."
 	rm -f ${BINARY_NAME}
-	rm -f *.log
+	rm -rf logs/
 
 # 代碼美化與靜態檢查 (符合專案規範)
 fmt:
