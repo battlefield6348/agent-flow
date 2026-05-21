@@ -1,32 +1,80 @@
-.PHONY: build run clean fmt test
+.PHONY: build start stop status clean fmt test logs attach-p attach-e check-tools
 
 # 基本變數設定
 BINARY_NAME=collaborator
-MAIN_PATH=./cmd/collaborator/main.go
+MAIN_PATH=./cmd/agent-flow/main.go
 
-# 編譯執行檔 (優化二進位大小)
+# 編譯執行檔
 build:
-	@echo "Building ${BINARY_NAME}..."
-	go build -ldflags="-s -w" -o ${BINARY_NAME} ${MAIN_PATH}
+	@echo "Building agent-flow..."
+	go build -ldflags="-s -w" -o agent-flow ${MAIN_PATH}
+	@echo "Building mcp-server..."
+	go build -ldflags="-s -w" -o mcp-server ./cmd/mcp-server/main.go
 
-# 直接執行專案 (開發常用)
-run:
-	@echo "Starting Orchestrator..."
-	go run ${MAIN_PATH}
+# --- 核心操作指令 ---
 
-# 清理專案 (移除編譯檔與產出的日誌)
-clean:
-	@echo "Cleaning up..."
-	rm -f ${BINARY_NAME}
-	rm -rf logs/
+# 一鍵啟動 (包含工具檢查)
+start: check-tools
+	@echo "Starting AI War Room (agent-flow)..."
+	@go run ${MAIN_PATH}
 
-# 代碼美化與靜態檢查 (符合專案規範)
+# 一鍵停止 (優雅終止所有進程與 Session)
+stop:
+	@echo "Stopping all AI services..."
+	@# 先優雅關閉 tmux session
+	@tmux kill-session -t planner 2>/dev/null || true
+	@tmux kill-session -t coder 2>/dev/null || true
+	@# 再精確殺掉 agent-flow 執行檔
+	@pkill -x agent-flow 2>/dev/null || true
+	@ps aux | grep "go run ./cmd/agent-flow/main.go" | grep -v grep | awk '{print $$2}' | xargs -r kill -9 || true
+	@echo "All services stopped."
+
+# 清理環境 (日誌、暫存檔與編譯檔)
+clean: stop
+	@echo "Cleaning up logs and temporary files..."
+	@rm -rf logs/*
+	@rm -f plan.json error_log.json agent-flow ${BINARY_NAME}
+	@echo "Cleaned."
+
+# --- 監看指令 ---
+
+# 同時監看所有 AI 的即時日誌 (Tail)
+logs:
+	@echo "Tailing all AI logs (Ctrl+C to stop)..."
+	@tail -f logs/*.log
+
+# 進入 Planner 現場 (tmux)
+attach-p:
+	@echo "TIP: Press 'Ctrl+b' then 'd' to exit WITHOUT killing the AI."
+	@sleep 2
+	@tmux attach -t planner
+
+# 進入 Coder 現場 (tmux)
+attach-c:
+	@echo "TIP: Press 'Ctrl+b' then 'd' to exit WITHOUT killing the AI."
+	@sleep 2
+	@tmux attach -t coder
+
+# 查看運行狀態
+status:
+	@echo "Current AI Sessions:"
+	@echo "----------------------------------------------------"
+	@tmux ls 2>/dev/null | grep -E 'planner|coder' || echo "All AI Workers are OFFLINE."
+	@echo "----------------------------------------------------"
+
+# --- 輔助指令 ---
+
+check-tools:
+	@command -v tmux >/dev/null 2>&1 || { echo >&2 "Error: tmux is not installed."; exit 1; }
+	@command -v gemini >/dev/null 2>&1 || { echo >&2 "Error: gemini cli is not installed."; exit 1; }
+	@command -v codex >/dev/null 2>&1 || { echo >&2 "Error: codex cli is not installed."; exit 1; }
+	@echo "Environment check PASSED."
+
 fmt:
 	@echo "Formatting code..."
 	go fmt ./...
 	go vet ./...
 
-# 執行單元測試
 test:
 	@echo "Running tests..."
 	go test -v ./...

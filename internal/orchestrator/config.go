@@ -1,9 +1,9 @@
 package orchestrator
 
 import (
-"os"
+	"os"
 
-"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -23,11 +23,12 @@ type Config struct {
 type CollaboratorConfig struct {
 	ID                 string            `yaml:"id"`
 	Name               string            `yaml:"name"`
+	Tag                string            `yaml:"tag"` // 用於 TG 的標籤，例如 #dev
 	Cmd                string            `yaml:"cmd"`
 	Args               []string          `yaml:"args"`
 	Tags               []string          `yaml:"tags"`
 	Skills             []string          `yaml:"skills"`
-	InitialInstruction string            `yaml:"initial_instruction"` // 新增自動引導指令
+	InitialInstruction string            `yaml:"initial_instruction"`
 	Env                map[string]string `yaml:"env"`
 }
 

@@ -1,27 +1,55 @@
 package orchestrator
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
 )
 
 type Worker struct {
-	Config CollaboratorConfig
-	LogDir string
-	cmd    *exec.Cmd // 🔴 必須保存 cmd 實例
-	stopCh chan struct{}
+	Config         CollaboratorConfig
+	LogDir         string
+	stopCh         chan struct{}
+	inputCh        chan string
+	outputCallback func(string)
+}
+
+func (w *Worker) SetOutputCallback(cb func(string)) {
+	w.outputCallback = cb
+}
+
+func (w *Worker) IsRunning() bool {
+	checkCmd := exec.Command("tmux", "has-session", "-t", w.Config.ID)
+	err := checkCmd.Run()
+	if err != nil {
+		// 捕捉最後的畫面以便除錯
+		captureCmd := exec.Command("tmux", "capture-pane", "-pt", w.Config.ID)
+		lastScreen, _ := captureCmd.Output()
+		if len(lastScreen) > 0 {
+			fmt.Printf("[%s] Last screen before ending:\n%s\n", w.Config.ID, string(lastScreen))
+		}
+	}
+	return err == nil
 }
 
 func NewWorker(cfg CollaboratorConfig, logDir string) *Worker {
 	return &Worker{
-		Config: cfg,
-		LogDir: logDir,
-		stopCh: make(chan struct{}),
+		Config:  cfg,
+		LogDir:  logDir,
+		stopCh:  make(chan struct{}),
+		inputCh: make(chan string, 10),
 	}
+}
+
+func (w *Worker) SendInput(text string) {
+	w.inputCh <- text
 }
 
 func (w *Worker) Start() {
@@ -29,119 +57,275 @@ func (w *Worker) Start() {
 }
 
 func (w *Worker) runLoop() {
-	backoff := 5 * time.Second
 	for {
 		select {
 		case <-w.stopCh:
 			return
 		default:
-			startTime := time.Now()
 			w.runProcess()
-			duration := time.Since(startTime)
-
-			// 如果處理時間太短（例如不到 10 秒就結束），可能是報錯或配額問題
-			if duration < 10*time.Second {
-				fmt.Printf("[%s] Process exited too quickly (%v), increasing backoff...\n", w.Config.ID, duration)
-				backoff *= 2
-				if backoff > 5*time.Minute {
-					backoff = 5 * time.Minute
-				}
-			} else {
-				// 正常執行完畢，重置 backoff
-				backoff = 5 * time.Second
-			}
-
-			fmt.Printf("[%s] Sleeping for %v before next run...\n", w.Config.ID, backoff)
-			time.Sleep(backoff)
+			time.Sleep(5 * time.Second)
 		}
 	}
 }
 
-// PrefixWriter 負責在輸出內容的每一行開頭加上指定的前綴
-type PrefixWriter struct {
-	ID        string
-	Writer    io.Writer
-	isAtStart bool // 記錄是否處於新的一行開頭
-}
-
-func (pw *PrefixWriter) Write(p []byte) (n int, err error) {
-	if len(p) == 0 {
-		return 0, nil
+// isPromptReady 檢查畫面是否出現可輸入的提示
+func (w *Worker) isPromptReady(screen string) bool {
+	// 濾掉 Thinking 狀態
+	lower := strings.ToLower(screen)
+	if strings.Contains(lower, "thinking") || strings.Contains(lower, "queued") || strings.Contains(lower, "working") {
+		return false
 	}
 
-	prefix := []byte(fmt.Sprintf("[%s] ", pw.ID))
-	var out []byte
+	// 支援多種常見的提示字元 (包含 Codex 的特殊符號)
+	prompts := []string{
+		">",
+		"›", // Codex 特有的 Unicode 提示符
+		"»",
+		"Type your message",
+		"workspace (",
+		"shift+tab",
+		"gpt-5.3-codex", // Codex 狀態列
+	}
 
-	for _, b := range p {
-		if pw.isAtStart {
-			out = append(out, prefix...)
-			pw.isAtStart = false
+	for _, p := range prompts {
+		if strings.Contains(screen, p) {
+			return true
 		}
-		out = append(out, b)
-		if b == '\n' {
-			pw.isAtStart = true
-		}
 	}
-
-	_, err = pw.Writer.Write(out)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
+	return false
 }
 
 func (w *Worker) runProcess() {
 	sessionID := w.Config.ID
-
-	// 1. 確保舊的 Session 已關閉
+	// 啟動前確保乾淨，但不要在循環中頻繁呼叫
 	_ = exec.Command("tmux", "kill-session", "-t", sessionID).Run()
 
-	// 2. 啟動分離的 tmux session (不帶 prompt, 只啟動 gemini)
-	fmt.Printf("[%s] Starting clean gemini session in tmux...\n", sessionID)
-	// 我們透過 env 命令啟動，確保所有環境變數都被正確傳遞
-	startCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionID, "gemini")
+	fmt.Printf("[%s] Engine started in tmux (PTY) mode.\n", sessionID)
+
+	argsStr := strings.TrimSpace(strings.Join(w.Config.Args, " "))
+	var fullCmd string
+	if argsStr != "" {
+		fullCmd = fmt.Sprintf("%s %s", w.Config.Cmd, argsStr)
+	} else {
+		fullCmd = w.Config.Cmd
+	}
+
+	startCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionID, "sh", "-c", fullCmd)
 	startCmd.Env = os.Environ()
+
 	if err := startCmd.Run(); err != nil {
-		fmt.Printf("[%s] Failed to start tmux session: %v\n", sessionID, err)
+		fmt.Printf("[%s] CRITICAL: Failed to run tmux start: %v\n", sessionID, err)
 		return
 	}
 
-	// 3. 等待初始化並設定日誌
-	time.Sleep(2 * time.Second)
-	if w.LogDir != "" {
-		_ = os.MkdirAll(w.LogDir, 0755)
-		logPath := filepath.Join(w.LogDir, fmt.Sprintf("%s.log", sessionID))
-		_ = exec.Command("tmux", "pipe-pane", "-t", sessionID, fmt.Sprintf("cat >> %s", logPath)).Run()
-	}
-
-	// 4. 如果有初始指令，透過 send-keys 「打」進去
-	if w.Config.InitialInstruction != "" {
-		fmt.Printf("[%s] Sending initial instruction via keys...\n", sessionID)
-		// 模擬真人輸入並按下 Enter
-		sendCmd := exec.Command("tmux", "send-keys", "-t", sessionID, w.Config.InitialInstruction, "Enter")
-		_ = sendCmd.Run()
-	}
-
-	fmt.Printf("%s [Worker:%s] Running in tmux mode (Session: %s)\n", time.Now().Format("2006/01/02 15:04:05"), sessionID, sessionID)
-	fmt.Printf("[%s] To see it work, run: tmux attach -t %s\n", sessionID, sessionID)
-
-	// 5. 等待 session 結束
-	for {
-		time.Sleep(5 * time.Second)
-		checkCmd := exec.Command("tmux", "has-session", "-t", sessionID)
-		if err := checkCmd.Run(); err != nil {
-			fmt.Printf("[%s] Session ended.\n", sessionID)
+	// 等待初始化
+	fmt.Printf("[%s] Waiting for CLI initialization...\n", sessionID)
+	ready := false
+	for i := 0; i < 45; i++ {
+		time.Sleep(2 * time.Second)
+		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+		out, _ := checkCmd.Output()
+		if w.isPromptReady(string(out)) {
+			fmt.Printf("[%s] CLI is READY.\n", sessionID)
+			ready = true
 			break
+		}
+	}
+
+	if !ready {
+		fmt.Printf("[%s] WARNING: Ready pattern not detected, proceeding anyway...\n", sessionID)
+	}
+
+	// 啟動輸入監聽
+	stopInput := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case input := <-w.inputCh:
+				fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
+
+				// 嘗試等待 Prompt 出現，最多試 3 次
+				for i := 0; i < 3; i++ {
+					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+					out, _ := checkCmd.Output()
+					if w.isPromptReady(string(out)) {
+						break
+					}
+					time.Sleep(2 * time.Second)
+				}
+
+				// 直接打字並發送
+				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", input).Run()
+				time.Sleep(500 * time.Millisecond)
+				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+			case <-stopInput:
+				return
+			case <-w.stopCh:
+				return
+			}
+		}
+	}()
+
+	// 啟動日誌監控
+	_ = os.MkdirAll(w.LogDir, 0755)
+	logPath := filepath.Join(w.LogDir, fmt.Sprintf("%s.log", sessionID))
+	_ = exec.Command("tmux", "pipe-pane", "-t", sessionID, fmt.Sprintf("cat >> %s", logPath)).Run()
+	go w.tailLogFile(logPath)
+
+	// 初始指令
+	if w.Config.InitialInstruction != "" {
+		time.Sleep(3 * time.Second)
+		w.SendInput(w.Config.InitialInstruction)
+	}
+
+	// 存活檢查循環
+	for {
+		time.Sleep(10 * time.Second)
+		if !w.IsRunning() {
+			// 在正式關閉前，強行抓取最後的畫面日誌
+			captureCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+			lastScreen, _ := captureCmd.Output()
+			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, string(lastScreen))
+			
+			fmt.Printf("[%s] Session exited. Cleaning up...\n", sessionID)
+			close(stopInput)
+			break
+		}
+		select {
+		case <-w.stopCh:
+			close(stopInput)
+			return
+		default:
+		}
+	}
+}
+
+func (w *Worker) tailLogFile(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	_, _ = file.Seek(0, io.SeekEnd)
+	reader := bufio.NewReader(file)
+
+	var (
+		buffer []string
+		mu     sync.Mutex
+		timer  *time.Timer
+		last   string
+	)
+
+	sendBuffer := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(buffer) == 0 {
+			return
+		}
+
+		// 關鍵優化：逐行處理，只保留非雜訊行
+		var cleanLines []string
+		for _, line := range buffer {
+			if !w.shouldIgnore(line) {
+				cleanLines = append(cleanLines, line)
+			}
+		}
+		
+		buffer = nil
+		timer = nil
+
+		if len(cleanLines) == 0 {
+			return
+		}
+
+		fullText := strings.Join(cleanLines, "")
+		if fullText == last {
+			return
+		}
+
+		if w.outputCallback != nil {
+			w.outputCallback(fullText)
+		}
+		last = fullText
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err == nil {
+			clean := cleanANSI(line)
+			if strings.TrimSpace(clean) != "" {
+				mu.Lock()
+				buffer = append(buffer, clean)
+				if timer == nil {
+					timer = time.AfterFunc(2*time.Second, sendBuffer)
+				}
+				mu.Unlock()
+			}
+		} else {
+			time.Sleep(500 * time.Millisecond)
 		}
 
 		select {
 		case <-w.stopCh:
 			return
 		default:
-			continue
 		}
 	}
 }
+
+// shouldIgnore 判定是否為無意義的系統噪音或 TUI 介面元素
+func (w *Worker) shouldIgnore(text string) bool {
+	t := strings.ToLower(text)
+	// 濾掉 TUI 繪圖、狀態列關鍵字與動態加載符號
+	noise := []string{
+		"▀▀▀", "▄▄▄", "────", "───",
+		"workspace (/", "branch", "sandbox", "auto (gemini",
+		"type your message", "shift+tab", "? for shortcuts",
+		"thinking...", "queued (press",
+		"yolo mode is enabled",
+		"using filekeychain fallback",
+		"loaded cached credentials",
+		"org.freedesktop.secrets",
+		"working...", "⠏", "⠼", "⠴", "⠦", "⠧", // 加載動畫符號
+		"yolo ctrl+y", "mcp servers", "skills", // 狀態列關鍵字
+		"quota", "used", "gemini 3", "gemini 1.5", // 狀態列剩餘額度等資訊
+	}
+	for _, n := range noise {
+		if strings.Contains(t, n) {
+			return true
+		}
+	}
+	// 濾掉過短或只有符號的訊息
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) < 2 {
+		return true
+	}
+	return false
+}
+
+// 強化版 ANSI 清理正則
+var ansiRegex = regexp.MustCompile(`[\x1B\x9B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))`)
+// 匹配不可見的控制字元與特定 Unicode 雜訊
+var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
+
+func cleanANSI(text string) string {
+	// 1. 移除標準 ANSI 逃逸序列
+	text = ansiRegex.ReplaceAllString(text, "")
+	// 2. 移除不可見的 ASCII 控制字元
+	text = controlCharsRegex.ReplaceAllString(text, "")
+	// 3. 移除特定的 Unicode 盲文符號 (常見於加載動畫)
+	text = strings.Map(func(r rune) rune {
+		if r >= '\u2800' && r <= '\u28FF' { // Braille Patterns
+			return -1
+		}
+		return r
+	}, text)
+	return strings.TrimSpace(text)
+}
+
+
 func (w *Worker) Stop() {
 	close(w.stopCh)
 	sessionID := w.Config.ID
@@ -164,8 +348,7 @@ func NewWorkerManager(configs []CollaboratorConfig, logDir string) *WorkerManage
 func (m *WorkerManager) StartAll() {
 	for i, w := range m.Workers {
 		if i > 0 {
-			fmt.Printf("[Orchestrator] Waiting 60s before starting next worker (%s) to avoid quota burst...\n", w.Config.ID)
-			time.Sleep(60 * time.Second)
+			time.Sleep(2 * time.Second)
 		}
 		w.Start()
 	}
