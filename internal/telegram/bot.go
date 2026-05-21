@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"log"
 	"strings"
 
@@ -46,7 +47,7 @@ func (b *Bot) Start() {
 
 	// 1. 如果已經有預設的 ChatID，主動發送上線通知
 	if b.defaultChatID != 0 {
-		b.SendMessage(b.defaultChatID, "🚀 *AI 開發指揮部已上線*\n您可以開始使用 `#planner` 或 `#coder` 下達指令了。")
+		b.SendHTML(b.defaultChatID, "🚀 <b>AI 開發指揮部已上線</b>\n您可以開始使用 <code>#planner</code> 或 <code>#coder</code> 下達指令了。")
 	} else {
 		fmt.Println("----------------------------------------------------")
 		fmt.Println("NOTICE: No ChatID configured.")
@@ -59,13 +60,8 @@ func (b *Bot) Start() {
 		workerName := w.Config.Name
 		w.SetOutputCallback(func(text string) {
 			if b.defaultChatID != 0 {
-				formatted := fmt.Sprintf("🤖 *[%s]*\n%s", workerName, text)
-				msg := tgbotapi.NewMessage(b.defaultChatID, formatted)
-				msg.ParseMode = "Markdown"
-				_, err := b.api.Send(msg)
-				if err != nil {
-					log.Printf("[TG] Failed to send worker output: %v", err)
-				}
+				formatted := fmt.Sprintf("🤖 <b>[%s]</b>\n%s", html.EscapeString(workerName), html.EscapeString(text))
+				b.SendHTML(b.defaultChatID, formatted)
 			}
 		})
 	}
@@ -169,39 +165,44 @@ func (b *Bot) handleCommand(m *tgbotapi.Message) {
 					break
 				}
 			}
-			res = append(res, fmt.Sprintf("- `%s`: %s (%s) [Tag: #%s]", c.ID, c.Name, status, c.Tag))
+			res = append(res, fmt.Sprintf("- <code>%s</code>: %s (%s) [Tag: #%s]",
+				html.EscapeString(c.ID),
+				html.EscapeString(c.Name),
+				html.EscapeString(status),
+				html.EscapeString(c.Tag)))
 		}
-		msg := tgbotapi.NewMessage(m.Chat.ID, "*Available Agents:*\n"+strings.Join(res, "\n"))
-		msg.ParseMode = "Markdown"
-		b.api.Send(msg)
+		b.SendHTML(m.Chat.ID, "<b>Available Agents:</b>\n"+strings.Join(res, "\n"))
 
 	case "/select":
 		if len(parts) < 2 {
-			msg := tgbotapi.NewMessage(m.Chat.ID, "Usage: `/select [agent_id]`")
-			b.api.Send(msg)
+			b.SendHTML(m.Chat.ID, "Usage: <code>/select [agent_id]</code>")
 			return
 		}
 		agentID := parts[1]
 		b.activeAgent[m.Chat.ID] = agentID
-		msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("✅ Selected: `%s`", agentID))
-		b.api.Send(msg)
+		b.SendHTML(m.Chat.ID, fmt.Sprintf("✅ Selected: <code>%s</code>", html.EscapeString(agentID)))
 
 	case "/status":
 		active, _ := b.activeAgent[m.Chat.ID]
-		msg := tgbotapi.NewMessage(m.Chat.ID, fmt.Sprintf("Active Session: `%s`", active))
-		msg.ParseMode = "Markdown"
-		b.api.Send(msg)
+		b.SendHTML(m.Chat.ID, fmt.Sprintf("Active Session: <code>%s</code>", html.EscapeString(active)))
 
 	case "/help", "/start":
-		help := "/list - Agents status\n/select [id] - Select agent\n/status - Current status"
-		msg := tgbotapi.NewMessage(m.Chat.ID, help)
-		b.api.Send(msg)
+		help := "<b>Commands:</b>\n/list - Agents status\n/select [id] - Select agent\n/status - Current status"
+		b.SendHTML(m.Chat.ID, help)
 	}
 }
 
 func (b *Bot) SendMessage(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	b.api.Send(msg)
+}
+
+func (b *Bot) SendHTML(chatID int64, htmlText string) {
+	msg := tgbotapi.NewMessage(chatID, htmlText)
+	msg.ParseMode = "HTML"
+	if _, err := b.api.Send(msg); err != nil {
+		log.Printf("[TG] Failed to send HTML message: %v", err)
+	}
 }
 
 // HandleInitialTask 用於在啟動時模擬接收到一個指令
@@ -218,7 +219,7 @@ func (b *Bot) HandleInitialTask(text string) {
 	}
 
 	// 先發送這條訊息到群組，讓使用者看到任務已啟動
-	b.SendMessage(b.defaultChatID, fmt.Sprintf("📢 *系統啟動自動任務*:\n%s", text))
+	b.SendHTML(b.defaultChatID, fmt.Sprintf("📢 <b>系統啟動自動任務</b>:\n%s", html.EscapeString(text)))
 
 	// 進入正常的處理流程邏輯
 	b.handleMessage(fakeMsg)

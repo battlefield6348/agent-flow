@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"os/signal"
@@ -55,7 +56,7 @@ func main() {
 				w.SetOutputCallback(func(line string) {
 					// 傳送給所有允許的會話 (或者您可以根據需要邏輯調整)
 					for _, chatID := range cfg.Telegram.AllowedChatIDs {
-						tgBot.SendMessage(chatID, fmt.Sprintf("*[%s]*\n%s", workerID, line))
+						tgBot.SendHTML(chatID, fmt.Sprintf("🤖 <b>[%s]</b>\n%s", html.EscapeString(workerID), html.EscapeString(line)))
 					}
 				})
 			}
