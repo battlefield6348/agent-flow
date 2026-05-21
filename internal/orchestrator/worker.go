@@ -19,6 +19,8 @@ type Worker struct {
 	stopCh         chan struct{}
 	inputCh        chan string
 	outputCallback func(string)
+	lastOutput     string
+	muLast         sync.Mutex
 }
 
 func (w *Worker) SetOutputCallback(cb func(string)) {
@@ -215,7 +217,6 @@ func (w *Worker) tailLogFile(path string) {
 		buffer []string
 		mu     sync.Mutex
 		timer  *time.Timer
-		last   string
 	)
 
 	sendBuffer := func() {
@@ -241,15 +242,28 @@ func (w *Worker) tailLogFile(path string) {
 		}
 
 		fullText := strings.TrimSpace(strings.Join(cleanLines, ""))
+
+		w.muLast.Lock()
+		last := w.lastOutput
+		w.muLast.Unlock()
+
 		// 檢查是否與上次發送的內容完全相同 (忽略空白)
 		if fullText == "" || fullText == strings.TrimSpace(last) {
+			return
+		}
+
+		// 如果新內容只是舊內容的開頭（代表是重複或不完整的更新），則忽略
+		if strings.HasPrefix(strings.TrimSpace(last), fullText) && len(fullText) < len(strings.TrimSpace(last)) {
 			return
 		}
 
 		if w.outputCallback != nil {
 			w.outputCallback(fullText)
 		}
-		last = fullText
+
+		w.muLast.Lock()
+		w.lastOutput = fullText
+		w.muLast.Unlock()
 	}
 
 	for {
@@ -257,6 +271,11 @@ func (w *Worker) tailLogFile(path string) {
 		if err == nil {
 			clean := cleanANSI(line)
 			trimmed := strings.TrimSpace(clean)
+
+			w.muLast.Lock()
+			last := w.lastOutput
+			w.muLast.Unlock()
+
 			// 過濾掉重複的單行更新與空白
 			if trimmed != "" && trimmed != strings.TrimSpace(last) {
 				mu.Lock()
