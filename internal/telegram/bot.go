@@ -125,7 +125,7 @@ func (b *Bot) handleMessage(m *tgbotapi.Message) {
 			// 關鍵優化：在發送給 AI 前，先過濾掉標籤本身，避免 AI 回覆時又帶標籤
 			cleanedText := strings.ReplaceAll(text, targetTag, "")
 			cleanedText = strings.TrimSpace(cleanedText)
-			
+
 			for _, w := range b.manager.Workers {
 				if w.Config.ID == cfg.ID {
 					w.SendInput(cleanedText)

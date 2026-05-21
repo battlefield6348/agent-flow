@@ -187,7 +187,7 @@ func (w *Worker) runProcess() {
 			captureCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
 			lastScreen, _ := captureCmd.Output()
 			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, string(lastScreen))
-			
+
 			fmt.Printf("[%s] Session exited. Cleaning up...\n", sessionID)
 			close(stopInput)
 			break
@@ -232,7 +232,7 @@ func (w *Worker) tailLogFile(path string) {
 				cleanLines = append(cleanLines, line)
 			}
 		}
-		
+
 		buffer = nil
 		timer = nil
 
@@ -307,6 +307,7 @@ func (w *Worker) shouldIgnore(text string) bool {
 
 // 強化版 ANSI 清理正則
 var ansiRegex = regexp.MustCompile(`[\x1B\x9B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))`)
+
 // 匹配不可見的控制字元與特定 Unicode 雜訊
 var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
 
@@ -324,7 +325,6 @@ func cleanANSI(text string) string {
 	}, text)
 	return strings.TrimSpace(text)
 }
-
 
 func (w *Worker) Stop() {
 	close(w.stopCh)
