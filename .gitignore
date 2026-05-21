@@ -1,5 +1,7 @@
 # Binary
-collaborator
+/collaborator
+/agent-flow
+/mcp-server
 
 # Configs
 configs/config.yaml
@@ -17,3 +19,4 @@ output/
 .idea/
 .vscode/
 .DS_Store
+.gemini/
