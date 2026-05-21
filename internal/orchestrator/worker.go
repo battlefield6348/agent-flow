@@ -240,8 +240,9 @@ func (w *Worker) tailLogFile(path string) {
 			return
 		}
 
-		fullText := strings.Join(cleanLines, "")
-		if fullText == last {
+		fullText := strings.TrimSpace(strings.Join(cleanLines, ""))
+		// 檢查是否與上次發送的內容完全相同 (忽略空白)
+		if fullText == "" || fullText == strings.TrimSpace(last) {
 			return
 		}
 
@@ -256,11 +257,12 @@ func (w *Worker) tailLogFile(path string) {
 		if err == nil {
 			clean := cleanANSI(line)
 			trimmed := strings.TrimSpace(clean)
+			// 過濾掉重複的單行更新與空白
 			if trimmed != "" && trimmed != strings.TrimSpace(last) {
 				mu.Lock()
 				buffer = append(buffer, clean)
 				if timer == nil {
-					timer = time.AfterFunc(2*time.Second, sendBuffer)
+					timer = time.AfterFunc(3*time.Second, sendBuffer)
 				}
 				mu.Unlock()
 			}
@@ -318,9 +320,22 @@ var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
 func cleanANSI(text string) string {
 	// 1. 移除標準 ANSI 逃逸序列
 	text = ansiRegex.ReplaceAllString(text, "")
-	// 2. 移除不可見的 ASCII 控制字元
+
+	// 2. 處理 \r (Carriage Return): 模擬終端覆寫，只保留最後一部分
+	if strings.Contains(text, "\r") {
+		parts := strings.Split(text, "\r")
+		for i := len(parts) - 1; i >= 0; i-- {
+			p := strings.TrimSpace(parts[i])
+			if p != "" {
+				text = parts[i]
+				break
+			}
+		}
+	}
+
+	// 3. 移除不可見的 ASCII 控制字元 (除了 \n)
 	text = controlCharsRegex.ReplaceAllString(text, "")
-	// 3. 移除特定的 Unicode 盲文符號 (常見於加載動畫)
+	// 4. 移除特定的 Unicode 盲文符號 (常見於加載動畫)
 	text = strings.Map(func(r rune) rune {
 		if r >= '\u2800' && r <= '\u28FF' { // Braille Patterns
 			return -1
