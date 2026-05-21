@@ -255,7 +255,8 @@ func (w *Worker) tailLogFile(path string) {
 		line, err := reader.ReadString('\n')
 		if err == nil {
 			clean := cleanANSI(line)
-			if strings.TrimSpace(clean) != "" {
+			trimmed := strings.TrimSpace(clean)
+			if trimmed != "" && trimmed != strings.TrimSpace(last) {
 				mu.Lock()
 				buffer = append(buffer, clean)
 				if timer == nil {
@@ -289,8 +290,11 @@ func (w *Worker) shouldIgnore(text string) bool {
 		"loaded cached credentials",
 		"org.freedesktop.secrets",
 		"working...", "⠏", "⠼", "⠴", "⠦", "⠧", // 加載動畫符號
+		"press ctrl+o", "show more lines", // 終端狀態列提示
 		"yolo ctrl+y", "mcp servers", "skills", // 狀態列關鍵字
 		"quota", "used", "gemini 3", "gemini 1.5", // 狀態列剩餘額度等資訊
+		"ctrl+c to stop", "ctrl+u to undo",
+		"...", "✦",
 	}
 	for _, n := range noise {
 		if strings.Contains(t, n) {
