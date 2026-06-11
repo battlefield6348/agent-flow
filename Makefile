@@ -22,7 +22,7 @@ start: check-tools
 stop:
 	@echo "Stopping all AI services..."
 	@# 先優雅關閉 tmux session
-	@tmux kill-session -t planner 2>/dev/null || true
+	@tmux kill-session -t reviewer 2>/dev/null || true
 	@tmux kill-session -t coder 2>/dev/null || true
 	@# 再精確殺掉 agent-flow 執行檔
 	@pkill -x agent-flow 2>/dev/null || true
@@ -43,11 +43,11 @@ logs:
 	@echo "Tailing all AI logs (Ctrl+C to stop)..."
 	@tail -f logs/*.log
 
-# 進入 Planner 現場 (tmux)
-attach-p:
+# 進入 Reviewer 現場 (tmux)
+attach-r:
 	@echo "TIP: Press 'Ctrl+b' then 'd' to exit WITHOUT killing the AI."
 	@sleep 2
-	@tmux attach -t planner
+	@tmux attach -t reviewer
 
 # 進入 Coder 現場 (tmux)
 attach-c:
@@ -59,7 +59,7 @@ attach-c:
 status:
 	@echo "Current AI Sessions:"
 	@echo "----------------------------------------------------"
-	@tmux ls 2>/dev/null | grep -E 'planner|coder' || echo "All AI Workers are OFFLINE."
+	@tmux ls 2>/dev/null | grep -E 'reviewer|coder' || echo "All AI Workers are OFFLINE."
 	@echo "----------------------------------------------------"
 
 # --- 輔助指令 ---

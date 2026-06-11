@@ -50,7 +50,7 @@ func (b *Bot) Start() {
 
 	// 如果已經有設定預設群組，則發送上線通知
 	if b.defaultChatID != 0 {
-		b.SendHTML(b.defaultChatID, "🚀 <b>AI 開發指揮部已上線</b>\n您可以開始使用 <code>#planner</code> 或 <code>#coder</code> 下達指令了。")
+		b.SendHTML(b.defaultChatID, "🚀 <b>AI 開發指揮部已上線</b>\n您可以開始使用 <code>#reviewer</code> 或 <code>#coder</code> 下達指令了。")
 	} else {
 		fmt.Println("----------------------------------------------------")
 		fmt.Println("NOTICE: No ChatID configured.")
