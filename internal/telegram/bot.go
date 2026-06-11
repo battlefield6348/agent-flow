@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"gemini-collaborator-go/internal/orchestrator"
 
@@ -45,7 +48,7 @@ func NewBot(token string, allowedChatIDs []int64, configs []orchestrator.Collabo
 func (b *Bot) Start() {
 	log.Printf("[TG] War Room initialized on account %s", b.api.Self.UserName)
 
-	// 1. 如果已經有預設的 ChatID，主動發送上線通知
+	// 如果已經有設定預設群組，則發送上線通知
 	if b.defaultChatID != 0 {
 		b.SendHTML(b.defaultChatID, "🚀 <b>AI 開發指揮部已上線</b>\n您可以開始使用 <code>#planner</code> 或 <code>#coder</code> 下達指令了。")
 	} else {
@@ -55,16 +58,8 @@ func (b *Bot) Start() {
 		fmt.Println("----------------------------------------------------")
 	}
 
-	// 2. 設定 Worker 的輸出回調...
-	for _, w := range b.manager.Workers {
-		workerName := w.Config.Name
-		w.SetOutputCallback(func(text string) {
-			if b.defaultChatID != 0 {
-				formatted := fmt.Sprintf("🤖 <b>[%s]</b>\n%s", html.EscapeString(workerName), html.EscapeString(text))
-				b.SendHTML(b.defaultChatID, formatted)
-			}
-		})
-	}
+	// 啟動背景排程以輪詢各 Worker 的答案檔案並發送回 Telegram
+	go b.pollAnswerFiles()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -223,4 +218,60 @@ func (b *Bot) HandleInitialTask(text string) {
 
 	// 進入正常的處理流程邏輯
 	b.handleMessage(fakeMsg)
+}
+
+func (b *Bot) pollAnswerFiles() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		for _, w := range b.manager.Workers {
+			sessionID := w.Config.ID
+			workerName := w.Config.Name
+			answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
+
+			// 檢查該 Worker 是否有新生成的答案檔案
+			if _, err := os.Stat(answerFile); os.IsNotExist(err) {
+				continue
+			}
+
+			data, err := os.ReadFile(answerFile)
+			if err != nil {
+				continue
+			}
+
+			content := strings.TrimSpace(string(data))
+			if content == "" {
+				continue
+			}
+
+			// 將讀取到的答案傳送到所有允許的 Telegram 會話中
+			if len(b.allowedChatIDs) > 0 {
+				prefix := fmt.Sprintf("🤖 <b>[%s]</b>\n", html.EscapeString(workerName))
+				if w.Config.TGPrefix != "" {
+					prefix = w.Config.TGPrefix
+				}
+				formatted := prefix + html.EscapeString(content)
+				for _, chatID := range b.allowedChatIDs {
+					b.SendHTML(chatID, formatted)
+					log.Printf("[%s] Sent answer to chat %d (%d bytes)", sessionID, chatID, len(content))
+				}
+			} else if b.defaultChatID != 0 {
+				prefix := fmt.Sprintf("🤖 <b>[%s]</b>\n", html.EscapeString(workerName))
+				if w.Config.TGPrefix != "" {
+					prefix = w.Config.TGPrefix
+				}
+				formatted := prefix + html.EscapeString(content)
+				b.SendHTML(b.defaultChatID, formatted)
+				log.Printf("[%s] Sent answer to chat %d (%d bytes)", sessionID, b.defaultChatID, len(content))
+			} else {
+				log.Printf("[%s] Answer found but defaultChatID is not set: %s", sessionID, content)
+			}
+
+			// 清空檔案內容，避免下一次輪詢重複發送
+			if err := os.WriteFile(answerFile, []byte(""), 0644); err != nil {
+				log.Printf("[%s] Failed to clear answer file: %v", sessionID, err)
+			}
+		}
+	}
 }

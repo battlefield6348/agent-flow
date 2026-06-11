@@ -66,7 +66,8 @@ status:
 
 check-tools:
 	@command -v tmux >/dev/null 2>&1 || { echo >&2 "Error: tmux is not installed."; exit 1; }
-	@command -v gemini >/dev/null 2>&1 || { echo >&2 "Error: gemini cli is not installed."; exit 1; }
+	@command -v codex >/dev/null 2>&1 || { echo >&2 "Error: codex cli is not installed."; exit 1; }
+	@command -v agy >/dev/null 2>&1 || { echo >&2 "Error: agy cli is not installed."; exit 1; }
 	@echo "Environment check PASSED."
 
 fmt:

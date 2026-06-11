@@ -15,28 +15,23 @@ func main() {
 	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
 	flag.Parse()
 
-	// 1. 載入配置
 	cfg, err := orchestrator.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2. 確保 MCP Server 已註冊到 Gemini CLI
 	ensureMCPRegistered(cfg.Database.Path)
 
-	// 3. 初始化 Worker Manager
 	logDir := cfg.Logs.Path
 	if logDir == "" {
 		logDir = "./logs"
 	}
 	manager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir)
 
-	// 4. 啟動所有本地 Worker (tmux 模式)
 	fmt.Println("Starting local Workers in tmux...")
 	manager.StartAll()
 
-	// 5. 初始化並啟動 Telegram Bot (指揮部模式)
 	bot, err := telegram.NewBot(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs, cfg.Collaborators, manager)
 	if err != nil {
 		fmt.Printf("Failed to initialize Telegram Bot: %v\n", err)
@@ -47,7 +42,6 @@ func main() {
 	fmt.Println("Telegram War Room Mode is ACTIVE.")
 	fmt.Println("Connect to your Telegram group and start collaborating!")
 
-	// 啟動 Bot (阻塞主進程)
 	bot.Start()
 }
 

@@ -1,9 +1,7 @@
 package orchestrator
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,36 +68,80 @@ func (w *Worker) runLoop() {
 	}
 }
 
-// isPromptReady 檢查畫面是否出現可輸入的提示
+// isPromptReady 檢查畫面最後幾行是否出現可輸入的提示，避免歷史中的舊提示符造成誤判
 func (w *Worker) isPromptReady(screen string) bool {
-	// 濾掉 Thinking 狀態
-	lower := strings.ToLower(screen)
-	if strings.Contains(lower, "thinking") || strings.Contains(lower, "queued") || strings.Contains(lower, "working") {
+	rawLines := strings.Split(screen, "\n")
+	if len(rawLines) == 0 {
 		return false
 	}
 
-	// 支援多種常見的提示字元 (包含 Codex 的特殊符號)
+	// 排除 tmux 視窗底部填充的空白空行，精確定位有內容的最後幾行
+	end := len(rawLines)
+	for end > 0 && strings.TrimSpace(rawLines[end-1]) == "" {
+		end--
+	}
+	if end == 0 {
+		return false
+	}
+
+	start := end - 3
+	if start < 0 {
+		start = 0
+	}
+	lastRows := rawLines[start:end]
+
+	// 檢查最後幾行是否有 thinking 等關鍵字，有的話說明還在處理中
+	for _, row := range lastRows {
+		lower := strings.ToLower(row)
+		if strings.Contains(lower, "thinking") || strings.Contains(lower, "queued") || strings.Contains(lower, "working") {
+			return false
+		}
+	}
+
+	// 檢查最後幾行是否包含提示字元
 	prompts := []string{
 		">",
-		"›", // Codex 特有的 Unicode 提示符
+		"›",
 		"»",
 		"Type your message",
 		"workspace (",
 		"shift+tab",
-		"gpt-5.3-codex", // Codex 狀態列
+		"gpt-5.3-codex",
 	}
 
-	for _, p := range prompts {
-		if strings.Contains(screen, p) {
-			return true
+	for _, row := range lastRows {
+		for _, p := range prompts {
+			if strings.Contains(row, p) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
+func (w *Worker) getHistoryLines(sessionID string) ([]string, error) {
+	cmd := exec.Command("tmux", "capture-pane", "-S", "-", "-J", "-p", "-t", sessionID)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	rawLines := strings.Split(string(out), "\n")
+
+	// 去除 tmux 視窗底部填充的空白行，以取得精確的實際內容邊界
+	end := len(rawLines)
+	for end > 0 && strings.TrimSpace(rawLines[end-1]) == "" {
+		end--
+	}
+
+	var lines []string
+	for i := 0; i < end; i++ {
+		lines = append(lines, rawLines[i])
+	}
+	return lines, nil
+}
+
 func (w *Worker) runProcess() {
 	sessionID := w.Config.ID
-	// 啟動前確保乾淨，但不要在循環中頻繁呼叫
 	_ = exec.Command("tmux", "kill-session", "-t", sessionID).Run()
 
 	fmt.Printf("[%s] Engine started in tmux (PTY) mode.\n", sessionID)
@@ -120,7 +162,6 @@ func (w *Worker) runProcess() {
 		return
 	}
 
-	// 等待初始化
 	fmt.Printf("[%s] Waiting for CLI initialization...\n", sessionID)
 	ready := false
 	for i := 0; i < 45; i++ {
@@ -138,7 +179,6 @@ func (w *Worker) runProcess() {
 		fmt.Printf("[%s] WARNING: Ready pattern not detected, proceeding anyway...\n", sessionID)
 	}
 
-	// 啟動輸入監聽
 	stopInput := make(chan struct{})
 	go func() {
 		for {
@@ -146,8 +186,8 @@ func (w *Worker) runProcess() {
 			case input := <-w.inputCh:
 				fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
 
-				// 嘗試等待 Prompt 出現，最多試 3 次
-				for i := 0; i < 3; i++ {
+				// 等待 AI 進入就緒狀態，避免在 AI 還在前一次處理中就發送新輸入
+				for i := 0; i < 45; i++ {
 					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
 					out, _ := checkCmd.Output()
 					if w.isPromptReady(string(out)) {
@@ -156,11 +196,113 @@ func (w *Worker) runProcess() {
 					time.Sleep(2 * time.Second)
 				}
 
-				// 直接打字並發送
+				// 記錄發送問題前的終端歷史，以便後續比對出這次問題的回答內容
+				linesBefore, err := w.getHistoryLines(sessionID)
+				var N int
+				if err == nil {
+					N = len(linesBefore)
+				}
+
+				// 將輸入傳送到 tmux 視窗內，並模擬按下 Enter 鍵以執行
 				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", input).Run()
 				time.Sleep(500 * time.Millisecond)
 				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
 				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+
+				// 稍作延遲，確保指令已經開始在 tmux 中執行，避免馬上判定為 READY
+				time.Sleep(2 * time.Second)
+
+				// 持續偵測 tmux 畫面內容不再變化，且重新出現 Prompt 代表執行完畢
+				maxPolls := 3600
+				var lastScreen string
+				sameCount := 0
+				for poll := 0; poll < maxPolls; poll++ {
+					time.Sleep(1 * time.Second)
+					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+					out, _ := checkCmd.Output()
+					currScreen := string(out)
+
+					currClean := cleanANSI(currScreen)
+					lastClean := cleanANSI(lastScreen)
+
+					if currClean == lastClean && currClean != "" {
+						sameCount++
+					} else {
+						sameCount = 0
+					}
+					lastScreen = currScreen
+
+					if sameCount >= 2 {
+						if w.isPromptReady(currScreen) {
+							break
+						}
+					}
+				}
+
+				// 抓取執行完畢後的完整歷史，並切分出新增的文字行
+				linesAfter, err := w.getHistoryLines(sessionID)
+				if err != nil {
+					fmt.Printf("[%s] Error getting history after: %v\n", sessionID, err)
+					continue
+				}
+
+				var newLines []string
+				if len(linesAfter) > N {
+					newLines = linesAfter[N:]
+				} else {
+					newLines = linesAfter
+				}
+
+				// 過濾與清理每一行，移除 ANSI 控制字元與回顯問題等雜訊
+				var cleanLines []string
+				for _, line := range newLines {
+					cleaned := cleanANSI(line)
+					if w.shouldIgnore(cleaned) {
+						continue
+					}
+
+					// 移除提示符並比對是否為輸入回顯，避免重複將問題傳回 Telegram
+					trimmedLine := strings.TrimSpace(cleaned)
+					for _, p := range []string{">", "›", "»", "🤖"} {
+						trimmedLine = strings.TrimPrefix(trimmedLine, p)
+						trimmedLine = strings.TrimSpace(trimmedLine)
+					}
+					if trimmedLine == strings.TrimSpace(input) {
+						continue
+					}
+
+					if trimmedLine == "" {
+						continue
+					}
+
+					cleanLines = append(cleanLines, cleaned)
+				}
+
+				// 拼接成完整的回答
+				fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
+
+				w.muLast.Lock()
+				last := w.lastOutput
+				w.muLast.Unlock()
+
+				if fullText != "" && fullText != strings.TrimSpace(last) {
+					// 確保記錄目錄存在，以便寫入答案檔案
+					_ = os.MkdirAll(w.LogDir, 0755)
+					answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
+					if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
+						fmt.Printf("[%s] Error writing answer file: %v\n", sessionID, err)
+					} else {
+						fmt.Printf("[%s] Wrote answer to file (%d bytes): %s\n", sessionID, len(fullText), fullText)
+					}
+
+					if w.outputCallback != nil {
+						w.outputCallback(fullText)
+					}
+					w.muLast.Lock()
+					w.lastOutput = fullText
+					w.muLast.Unlock()
+				}
+
 			case <-stopInput:
 				return
 			case <-w.stopCh:
@@ -169,23 +311,14 @@ func (w *Worker) runProcess() {
 		}
 	}()
 
-	// 啟動日誌監控
-	_ = os.MkdirAll(w.LogDir, 0755)
-	logPath := filepath.Join(w.LogDir, fmt.Sprintf("%s.log", sessionID))
-	_ = exec.Command("tmux", "pipe-pane", "-t", sessionID, fmt.Sprintf("cat >> %s", logPath)).Run()
-	go w.tailLogFile(logPath)
-
-	// 初始指令
 	if w.Config.InitialInstruction != "" {
 		time.Sleep(3 * time.Second)
 		w.SendInput(w.Config.InitialInstruction)
 	}
 
-	// 存活檢查循環
 	for {
 		time.Sleep(10 * time.Second)
 		if !w.IsRunning() {
-			// 在正式關閉前，強行抓取最後的畫面日誌
 			captureCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
 			lastScreen, _ := captureCmd.Output()
 			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, string(lastScreen))
@@ -197,100 +330,6 @@ func (w *Worker) runProcess() {
 		select {
 		case <-w.stopCh:
 			close(stopInput)
-			return
-		default:
-		}
-	}
-}
-
-func (w *Worker) tailLogFile(path string) {
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-
-	_, _ = file.Seek(0, io.SeekEnd)
-	reader := bufio.NewReader(file)
-
-	var (
-		buffer []string
-		mu     sync.Mutex
-		timer  *time.Timer
-	)
-
-	sendBuffer := func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if len(buffer) == 0 {
-			return
-		}
-
-		// 關鍵優化：逐行處理，只保留非雜訊行
-		var cleanLines []string
-		for _, line := range buffer {
-			if !w.shouldIgnore(line) {
-				cleanLines = append(cleanLines, line)
-			}
-		}
-
-		buffer = nil
-		timer = nil
-
-		if len(cleanLines) == 0 {
-			return
-		}
-
-		fullText := strings.TrimSpace(strings.Join(cleanLines, ""))
-
-		w.muLast.Lock()
-		last := w.lastOutput
-		w.muLast.Unlock()
-
-		// 檢查是否與上次發送的內容完全相同 (忽略空白)
-		if fullText == "" || fullText == strings.TrimSpace(last) {
-			return
-		}
-
-		// 如果新內容只是舊內容的開頭（代表是重複或不完整的更新），則忽略
-		if strings.HasPrefix(strings.TrimSpace(last), fullText) && len(fullText) < len(strings.TrimSpace(last)) {
-			return
-		}
-
-		if w.outputCallback != nil {
-			w.outputCallback(fullText)
-		}
-
-		w.muLast.Lock()
-		w.lastOutput = fullText
-		w.muLast.Unlock()
-	}
-
-	for {
-		line, err := reader.ReadString('\n')
-		if err == nil {
-			clean := cleanANSI(line)
-			trimmed := strings.TrimSpace(clean)
-
-			w.muLast.Lock()
-			last := w.lastOutput
-			w.muLast.Unlock()
-
-			// 過濾掉重複的單行更新與空白
-			if trimmed != "" && trimmed != strings.TrimSpace(last) {
-				mu.Lock()
-				buffer = append(buffer, clean)
-				if timer == nil {
-					timer = time.AfterFunc(3*time.Second, sendBuffer)
-				}
-				mu.Unlock()
-			}
-		} else {
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		select {
-		case <-w.stopCh:
 			return
 		default:
 		}
