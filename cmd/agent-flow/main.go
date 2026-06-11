@@ -196,7 +196,7 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 							time.Sleep(15 * time.Second)
 						}
 
-						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n如果有要請 coder 改東西的請在回答中提供 MR 網址並且標記 #coder，如果沒有需要調整的就不需要標記。\n", mr.IID, mr.WebURL)
+						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
 						w.SendInput(instruction)
 					}
 				}
