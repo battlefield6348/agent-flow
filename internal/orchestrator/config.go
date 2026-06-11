@@ -31,6 +31,7 @@ type CollaboratorConfig struct {
 	InitialInstruction string            `yaml:"initial_instruction"`
 	Env                map[string]string `yaml:"env"`
 	TGPrefix           string            `yaml:"tg_prefix"`
+	Workspace          string            `yaml:"workspace"`
 }
 
 func LoadConfig(path string) (*Config, error) {

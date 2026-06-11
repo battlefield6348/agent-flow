@@ -154,7 +154,14 @@ func (w *Worker) runProcess() {
 		fullCmd = w.Config.Cmd
 	}
 
-	startCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionID, "sh", "-c", fullCmd)
+	var startCmd *exec.Cmd
+	if w.Config.Workspace != "" {
+		// 確保指定的工作目錄存在，避免 tmux 啟動失敗
+		_ = os.MkdirAll(w.Config.Workspace, 0755)
+		startCmd = exec.Command("tmux", "new-session", "-d", "-s", sessionID, "-c", w.Config.Workspace, "sh", "-c", fullCmd)
+	} else {
+		startCmd = exec.Command("tmux", "new-session", "-d", "-s", sessionID, "sh", "-c", fullCmd)
+	}
 	startCmd.Env = os.Environ()
 
 	if err := startCmd.Run(); err != nil {
