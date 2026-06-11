@@ -27,16 +27,19 @@ func (w *Worker) SetOutputCallback(cb func(string)) {
 
 func (w *Worker) IsRunning() bool {
 	checkCmd := exec.Command("tmux", "has-session", "-t", w.Config.ID)
-	err := checkCmd.Run()
-	if err != nil {
-		// 捕捉最後的畫面以便除錯
-		captureCmd := exec.Command("tmux", "capture-pane", "-pt", w.Config.ID)
-		lastScreen, _ := captureCmd.Output()
-		if len(lastScreen) > 0 {
-			fmt.Printf("[%s] Last screen before ending:\n%s\n", w.Config.ID, string(lastScreen))
-		}
+	if err := checkCmd.Run(); err != nil {
+		return false
 	}
-	return err == nil
+	return !w.isPaneDead(w.Config.ID)
+}
+
+func (w *Worker) isPaneDead(sessionID string) bool {
+	cmd := exec.Command("tmux", "display-message", "-p", "-F", "#{pane_dead}", "-t", sessionID)
+	out, err := cmd.Output()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(out)) == "1"
 }
 
 func NewWorker(cfg CollaboratorConfig, logDir string) *Worker {
@@ -171,6 +174,7 @@ func (w *Worker) runProcess() {
 		fmt.Printf("[%s] CRITICAL: Failed to run tmux start: %v\n", sessionID, err)
 		return
 	}
+	_ = exec.Command("tmux", "set-option", "-t", sessionID, "remain-on-exit", "on").Run()
 
 	fmt.Printf("[%s] Waiting for CLI initialization...\n", sessionID)
 	ready := false
@@ -228,6 +232,10 @@ func (w *Worker) runProcess() {
 				sameCount := 0
 				for poll := 0; poll < maxPolls; poll++ {
 					time.Sleep(1 * time.Second)
+					if w.isPaneDead(sessionID) {
+						fmt.Printf("[%s] Detected pane dead during polling, extracting last output.\n", sessionID)
+						break
+					}
 					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
 					out, _ := checkCmd.Output()
 					currScreen := string(out)
