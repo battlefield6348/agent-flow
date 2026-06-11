@@ -49,6 +49,9 @@ func NewWorker(cfg CollaboratorConfig, logDir string) *Worker {
 }
 
 func (w *Worker) SendInput(text string) {
+	if w.Config.InputPrefix != "" {
+		text = w.Config.InputPrefix + text
+	}
 	w.inputCh <- text
 }
 
