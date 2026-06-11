@@ -7,16 +7,9 @@ import (
 )
 
 type Config struct {
-	Database struct {
-		Path string `yaml:"path"`
-	} `yaml:"database"`
 	Logs struct {
 		Path string `yaml:"path"`
 	} `yaml:"logs"`
-	Telegram struct {
-		Token          string  `yaml:"token"`
-		AllowedChatIDs []int64 `yaml:"allowed_chat_ids"`
-	} `yaml:"telegram"`
 	Scheduler struct {
 		Enable          bool   `yaml:"enable"`
 		IntervalSeconds int    `yaml:"interval_seconds"`

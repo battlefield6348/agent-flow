@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"gemini-collaborator-go/internal/orchestrator"
-	"gemini-collaborator-go/internal/telegram"
 )
 
 type GitLabMR struct {
@@ -28,31 +27,21 @@ type GitLabMR struct {
 	} `json:"reviewers"`
 }
 
-func getGitLabProjectPath() (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	out, err := cmd.Output()
+func getProjectPathFromWebURL(webURL string) (string, error) {
+	parsed, err := url.Parse(webURL)
 	if err != nil {
 		return "", err
 	}
-	urlStr := strings.TrimSpace(string(out))
-	urlStr = strings.TrimSuffix(urlStr, ".git")
-
-	if strings.HasPrefix(urlStr, "git@") {
-		parts := strings.SplitN(urlStr, ":", 2)
-		if len(parts) == 2 {
-			return parts[1], nil
-		}
+	path := parsed.Path
+	path = strings.TrimPrefix(path, "/")
+	idx := strings.Index(path, "/-/merge_requests")
+	if idx == -1 {
+		idx = strings.Index(path, "/merge_requests")
 	}
-
-	if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
-		parsed, err := url.Parse(urlStr)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimPrefix(parsed.Path, "/"), nil
+	if idx == -1 {
+		return "", fmt.Errorf("could not find merge requests segment in URL: %s", webURL)
 	}
-
-	return "", fmt.Errorf("unsupported remote URL: %s", urlStr)
+	return path[:idx], nil
 }
 
 func getGitLabUsername(gitlabURL, token string) (string, error) {
@@ -134,9 +123,8 @@ func findLocalWorkspace(projectPath string) (string, error) {
 	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
 }
 
-func scanGitLabMRs(gitlabURL, token, projectPath, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
-	projectPathEscaped := url.PathEscape(projectPath)
-	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?state=opened", gitlabURL, projectPathEscaped)
+func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
+	apiURL := fmt.Sprintf("%s/api/v4/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -186,6 +174,12 @@ func scanGitLabMRs(gitlabURL, token, projectPath, username string, manager *orch
 				processedMRs[mr.IID] = mr.SHA
 				fmt.Printf("[Scheduler] Found review target: MR %d (%s), resolving local workspace...\n", mr.IID, mr.Title)
 
+				projectPath, err := getProjectPathFromWebURL(mr.WebURL)
+				if err != nil {
+					fmt.Printf("[Scheduler] Error parsing project path from URL: %v\n", err)
+					continue
+				}
+
 				subDir, err := findLocalWorkspace(projectPath)
 				if err != nil {
 					fmt.Printf("[Scheduler] Error locating local workspace: %v\n", err)
@@ -220,8 +214,6 @@ func main() {
 		fmt.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
-
-	ensureMCPRegistered(cfg.Database.Path)
 
 	logDir := cfg.Logs.Path
 	if logDir == "" {
@@ -260,14 +252,6 @@ func main() {
 				gitlabURL = "https://git.efaipd.com"
 			}
 
-			// 自動探測專案與使用者
-			projectPath, err := getGitLabProjectPath()
-			if err != nil {
-				fmt.Printf("[Scheduler] Error detecting GitLab project path: %v\n", err)
-				return
-			}
-			fmt.Printf("[Scheduler] Detected project path: %s\n", projectPath)
-
 			username, err := getGitLabUsername(gitlabURL, token)
 			if err != nil {
 				fmt.Printf("[Scheduler] Warning: Error detecting GitLab username: %v\n", err)
@@ -279,7 +263,7 @@ func main() {
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				scanGitLabMRs(gitlabURL, token, projectPath, username, manager, processedMRs)
+				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs)
 				select {
 				case <-ticker.C:
 					continue
@@ -288,33 +272,22 @@ func main() {
 		}()
 	}
 
-	bot, err := telegram.NewBot(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs, cfg.Collaborators, manager)
-	if err != nil {
-		fmt.Printf("Failed to initialize Telegram Bot: %v\n", err)
-		manager.StopAll()
-		os.Exit(1)
-	}
+	fmt.Println("Local Review Monitor Mode is ACTIVE.")
+	fmt.Println("Waiting for GitLab review targets...")
 
-	fmt.Println("Telegram War Room Mode is ACTIVE.")
-	fmt.Println("Connect to your Telegram group and start collaborating!")
-
-	bot.Start()
-}
-
-func ensureMCPRegistered(dbPath string) {
-	serverPath := "./mcp-server"
-	if _, err := os.Stat(serverPath); os.IsNotExist(err) {
-		fmt.Println("Warning: mcp-server binary not found. Please run 'make build' first.")
-		return
-	}
-
-	absServer, _ := filepath.Abs(serverPath)
-	absDB, _ := filepath.Abs(dbPath)
-
-	// 註冊或更新 MCP Server 設定
-	fmt.Printf("Ensuring MCP server 'collaborator-tools' is registered (DB: %s)...\n", absDB)
-	cmd := exec.Command("gemini", "mcp", "add", "collaborator-tools", absServer, "--db", absDB)
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("Note: MCP registration might have skipped or failed: %v\n", err)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		answerFile := filepath.Join(logDir, "reviewer_answer.txt")
+		if _, err := os.Stat(answerFile); err == nil {
+			data, err := os.ReadFile(answerFile)
+			if err == nil {
+				content := strings.TrimSpace(string(data))
+				if content != "" && !strings.Contains(content, "NO_TASKS") {
+					fmt.Printf("\n==================== REVIEWER ANSWER ====================\n%s\n=========================================================\n\n", content)
+					_ = os.WriteFile(answerFile, []byte(""), 0644)
+				}
+			}
+		}
 	}
 }
