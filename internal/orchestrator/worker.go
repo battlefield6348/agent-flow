@@ -298,6 +298,8 @@ func (w *Worker) runProcess() {
 
 				// 拼接成完整的回答
 				fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
+				fullText = thoughtRegex.ReplaceAllString(fullText, "")
+				fullText = strings.TrimSpace(fullText)
 
 				w.muLast.Lock()
 				last := w.lastOutput
@@ -387,6 +389,9 @@ var ansiRegex = regexp.MustCompile(`[\x1B\x9B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:
 
 // 匹配不可見的控制字元與特定 Unicode 雜訊
 var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
+
+// 用於過濾 AI 回覆中的 CoT (Chain of Thought) 思考過程，僅回傳最終答案
+var thoughtRegex = regexp.MustCompile(`(?s)<thought>.*?</thought>`)
 
 func cleanANSI(text string) string {
 	// 1. 移除標準 ANSI 逃逸序列

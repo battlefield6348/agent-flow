@@ -268,6 +268,25 @@ func (b *Bot) pollAnswerFiles() {
 				log.Printf("[%s] Answer found but defaultChatID is not set: %s", sessionID, content)
 			}
 
+			// 自動協調流轉：當 AI 輸出的答案內包含其他協作者標籤時，自動轉發其輸入，實現後端流程串接
+			for _, otherCfg := range b.configs {
+				if otherCfg.Tag == "" {
+					continue
+				}
+				targetTag := "#" + strings.ToLower(otherCfg.Tag)
+				if strings.Contains(strings.ToLower(content), targetTag) {
+					cleanedInput := strings.ReplaceAll(content, targetTag, "")
+					cleanedInput = strings.TrimSpace(cleanedInput)
+
+					for _, otherW := range b.manager.Workers {
+						if otherW.Config.ID == otherCfg.ID {
+							log.Printf("[%s] Auto-routing content to %s due to tag %s", sessionID, otherW.Config.ID, targetTag)
+							otherW.SendInput(cleanedInput)
+						}
+					}
+				}
+			}
+
 			// 清空檔案內容，避免下一次輪詢重複發送
 			if err := os.WriteFile(answerFile, []byte(""), 0644); err != nil {
 				log.Printf("[%s] Failed to clear answer file: %v", sessionID, err)
