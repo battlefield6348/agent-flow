@@ -404,7 +404,7 @@ var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
 var thoughtRegex = regexp.MustCompile(`(?s)<thought>.*?</thought>`)
 
 // 用於識別並分割 CLI TUI 輸出中的步驟分割線，以提取最終的對話答案
-var dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\u2500]{5,}[ \t]*$`)
+var dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\x{2500}]{5,}[ \t]*$`)
 
 func cleanANSI(text string) string {
 	// 1. 移除標準 ANSI 逃逸序列
