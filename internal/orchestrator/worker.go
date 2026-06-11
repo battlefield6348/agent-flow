@@ -59,6 +59,7 @@ func (w *Worker) SendInput(text string) {
 }
 
 func (w *Worker) Start() {
+	w.stopCh = make(chan struct{})
 	go w.runLoop()
 }
 
@@ -301,7 +302,7 @@ func (w *Worker) runProcess() {
 				fullText = thoughtRegex.ReplaceAllString(fullText, "")
 				fullText = strings.TrimSpace(fullText)
 
-				if w.Config.OnlyFinalResponse {
+				if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
 					parts := dividerRegex.Split(fullText, -1)
 					if len(parts) > 0 {
 						finalText := strings.TrimSpace(parts[len(parts)-1])

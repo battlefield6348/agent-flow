@@ -83,6 +83,57 @@ func getGitLabUsername(gitlabURL, token string) (string, error) {
 	return user.Username, nil
 }
 
+func findLocalWorkspace(projectPath string) (string, error) {
+	currentWd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	projectsDir := filepath.Dir(currentWd)
+
+	files, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return "", err
+	}
+
+	for _, file := range files {
+		if !file.IsDir() {
+			continue
+		}
+		subDir := filepath.Join(projectsDir, file.Name())
+		gitDir := filepath.Join(subDir, ".git")
+		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+			continue
+		}
+
+		cmd := exec.Command("git", "-C", subDir, "remote", "get-url", "origin")
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		urlStr := strings.TrimSpace(string(out))
+		urlStr = strings.TrimSuffix(urlStr, ".git")
+
+		var detectedPath string
+		if strings.HasPrefix(urlStr, "git@") {
+			parts := strings.SplitN(urlStr, ":", 2)
+			if len(parts) == 2 {
+				detectedPath = parts[1]
+			}
+		} else if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
+			parsed, err := url.Parse(urlStr)
+			if err == nil {
+				detectedPath = strings.TrimPrefix(parsed.Path, "/")
+			}
+		}
+
+		if strings.ToLower(detectedPath) == strings.ToLower(projectPath) {
+			return subDir, nil
+		}
+	}
+
+	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
+}
+
 func scanGitLabMRs(gitlabURL, token, projectPath, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
 	projectPathEscaped := url.PathEscape(projectPath)
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?state=opened", gitlabURL, projectPathEscaped)
@@ -133,11 +184,25 @@ func scanGitLabMRs(gitlabURL, token, projectPath, username string, manager *orch
 			lastSHA, exists := processedMRs[mr.IID]
 			if !exists || lastSHA != mr.SHA {
 				processedMRs[mr.IID] = mr.SHA
-				fmt.Printf("[Scheduler] Found review target: MR %d (%s), triggering Reviewer...\n", mr.IID, mr.Title)
+				fmt.Printf("[Scheduler] Found review target: MR %d (%s), resolving local workspace...\n", mr.IID, mr.Title)
+
+				subDir, err := findLocalWorkspace(projectPath)
+				if err != nil {
+					fmt.Printf("[Scheduler] Error locating local workspace: %v\n", err)
+					continue
+				}
 
 				for _, w := range manager.Workers {
 					if w.Config.ID == "reviewer" {
-						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
+						if w.Config.Workspace != subDir {
+							fmt.Printf("[Scheduler] Switching reviewer workspace from '%s' to '%s'...\n", w.Config.Workspace, subDir)
+							w.Stop()
+							w.Config.Workspace = subDir
+							w.Start()
+							time.Sleep(15 * time.Second)
+						}
+
+						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n如果有要請 coder 改東西的請在回答中提供 MR 網址並且標記 #coder，如果沒有需要調整的就不需要標記。\n", mr.IID, mr.WebURL)
 						w.SendInput(instruction)
 					}
 				}
