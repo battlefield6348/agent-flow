@@ -20,7 +20,8 @@ type Config struct {
 	Scheduler struct {
 		Enable          bool   `yaml:"enable"`
 		IntervalSeconds int    `yaml:"interval_seconds"`
-		Prompt          string `yaml:"prompt"`
+		ProjectPath     string `yaml:"project_path"`
+		Username        string `yaml:"username"`
 	} `yaml:"scheduler"`
 	Collaborators []CollaboratorConfig `yaml:"collaborators"`
 }

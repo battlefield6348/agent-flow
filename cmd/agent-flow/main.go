@@ -7,11 +7,78 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"encoding/json"
+	"net/url"
+	"strings"
 	"time"
 
 	"gemini-collaborator-go/internal/orchestrator"
 	"gemini-collaborator-go/internal/telegram"
 )
+
+type GitLabMR struct {
+	IID         int    `json:"iid"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	SHA         string `json:"sha"`
+	WebURL      string `json:"web_url"`
+	Reviewers   []struct {
+		Username string `json:"username"`
+	} `json:"reviewers"`
+}
+
+func scanGitLabMRs(cfg *orchestrator.Config, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
+	if cfg.Scheduler.ProjectPath == "" {
+		return
+	}
+	projectPathEscaped := url.PathEscape(cfg.Scheduler.ProjectPath)
+	apiPath := fmt.Sprintf("projects/%s/merge_requests?state=opened", projectPathEscaped)
+
+	cmd := exec.Command("glab", "api", apiPath)
+	out, err := cmd.Output()
+	if err != nil {
+		fmt.Printf("[Scheduler] Error calling glab API: %v\n", err)
+		return
+	}
+
+	var mrs []GitLabMR
+	if err := json.Unmarshal(out, &mrs); err != nil {
+		fmt.Printf("[Scheduler] Error parsing MR JSON: %v\n", err)
+		return
+	}
+
+	for _, mr := range mrs {
+		isTagged := false
+		descLower := strings.ToLower(mr.Description)
+		titleLower := strings.ToLower(mr.Title)
+		if strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer") {
+			isTagged = true
+		}
+		if cfg.Scheduler.Username != "" {
+			for _, r := range mr.Reviewers {
+				if strings.ToLower(r.Username) == strings.ToLower(cfg.Scheduler.Username) {
+					isTagged = true
+					break
+				}
+			}
+		}
+
+		if isTagged {
+			lastSHA, exists := processedMRs[mr.IID]
+			if !exists || lastSHA != mr.SHA {
+				processedMRs[mr.IID] = mr.SHA
+				fmt.Printf("[Scheduler] Found review target: MR %d (%s), triggering Reviewer...\n", mr.IID, mr.Title)
+
+				for _, w := range manager.Workers {
+					if w.Config.ID == "reviewer" {
+						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
+						w.SendInput(instruction)
+					}
+				}
+			}
+		}
+	}
+}
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
@@ -35,24 +102,19 @@ func main() {
 	manager.StartAll()
 
 	if cfg.Scheduler.Enable {
-		fmt.Printf("Starting background Scheduler (Interval: %ds)...\n", cfg.Scheduler.IntervalSeconds)
+		fmt.Printf("Starting background Scheduler (Interval: %ds, Project: %s)...\n", cfg.Scheduler.IntervalSeconds, cfg.Scheduler.ProjectPath)
 		go func() {
 			interval := cfg.Scheduler.IntervalSeconds
 			if interval <= 0 {
 				interval = 60
 			}
-			// 啟動時延遲，等待 CLI 系統初始化就緒
 			time.Sleep(15 * time.Second)
 
+			processedMRs := make(map[int]string)
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				for _, w := range manager.Workers {
-					if w.Config.ID == "reviewer" {
-						fmt.Println("[Scheduler] Triggering reviewer to scan for MRs...")
-						w.SendInput(cfg.Scheduler.Prompt)
-					}
-				}
+				scanGitLabMRs(cfg, manager, processedMRs)
 				select {
 				case <-ticker.C:
 					continue
