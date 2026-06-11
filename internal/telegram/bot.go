@@ -244,6 +244,10 @@ func (b *Bot) pollAnswerFiles() {
 			if content == "" {
 				continue
 			}
+			if strings.Contains(content, "NO_TASKS") {
+				_ = os.WriteFile(answerFile, []byte(""), 0644)
+				continue
+			}
 
 			// 將讀取到的答案傳送到所有允許的 Telegram 會話中
 			if len(b.allowedChatIDs) > 0 {

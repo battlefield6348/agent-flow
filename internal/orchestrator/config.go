@@ -17,6 +17,11 @@ type Config struct {
 		Token          string  `yaml:"token"`
 		AllowedChatIDs []int64 `yaml:"allowed_chat_ids"`
 	} `yaml:"telegram"`
+	Scheduler struct {
+		Enable          bool   `yaml:"enable"`
+		IntervalSeconds int    `yaml:"interval_seconds"`
+		Prompt          string `yaml:"prompt"`
+	} `yaml:"scheduler"`
 	Collaborators []CollaboratorConfig `yaml:"collaborators"`
 }
 
