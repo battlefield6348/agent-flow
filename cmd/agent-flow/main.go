@@ -28,34 +28,65 @@ type GitLabMR struct {
 	} `json:"reviewers"`
 }
 
-func scanGitLabMRs(cfg *orchestrator.Config, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
-	if cfg.Scheduler.ProjectPath == "" {
-		return
+func getGitLabProjectPath() (string, error) {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	urlStr := strings.TrimSpace(string(out))
+	urlStr = strings.TrimSuffix(urlStr, ".git")
+
+	if strings.HasPrefix(urlStr, "git@") {
+		parts := strings.SplitN(urlStr, ":", 2)
+		if len(parts) == 2 {
+			return parts[1], nil
+		}
 	}
 
-	// 1. 讀取獨立的 Code review 專用 token
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Printf("[Scheduler] Error getting home directory: %v\n", err)
-		return
+	if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
+		parsed, err := url.Parse(urlStr)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimPrefix(parsed.Path, "/"), nil
 	}
-	tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
-	tokenBytes, err := os.ReadFile(tokenPath)
-	if err != nil {
-		fmt.Printf("[Scheduler] Error reading GitLab token file at %s: %v\n", tokenPath, err)
-		return
-	}
-	token := strings.TrimSpace(string(tokenBytes))
 
-	// 2. 構建 API URL
-	gitlabURL := cfg.Scheduler.GitLabURL
-	if gitlabURL == "" {
-		gitlabURL = "https://git.efaipd.com"
+	return "", fmt.Errorf("unsupported remote URL: %s", urlStr)
+}
+
+func getGitLabUsername(gitlabURL, token string) (string, error) {
+	apiURL := fmt.Sprintf("%s/api/v4/user", gitlabURL)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", err
 	}
-	projectPathEscaped := url.PathEscape(cfg.Scheduler.ProjectPath)
+	req.Header.Set("PRIVATE-TOKEN", token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitLab User API status: %s", resp.Status)
+	}
+
+	var user struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return "", err
+	}
+	return user.Username, nil
+}
+
+func scanGitLabMRs(gitlabURL, token, projectPath, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
+	projectPathEscaped := url.PathEscape(projectPath)
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?state=opened", gitlabURL, projectPathEscaped)
 
-	// 3. 原生 HTTP 請求
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		fmt.Printf("[Scheduler] Error creating HTTP request: %v\n", err)
@@ -89,9 +120,9 @@ func scanGitLabMRs(cfg *orchestrator.Config, manager *orchestrator.WorkerManager
 		if strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer") {
 			isTagged = true
 		}
-		if cfg.Scheduler.Username != "" {
+		if username != "" {
 			for _, r := range mr.Reviewers {
-				if strings.ToLower(r.Username) == strings.ToLower(cfg.Scheduler.Username) {
+				if strings.ToLower(r.Username) == strings.ToLower(username) {
 					isTagged = true
 					break
 				}
@@ -137,7 +168,7 @@ func main() {
 	manager.StartAll()
 
 	if cfg.Scheduler.Enable {
-		fmt.Printf("Starting background Scheduler (Interval: %ds, Project: %s)...\n", cfg.Scheduler.IntervalSeconds, cfg.Scheduler.ProjectPath)
+		fmt.Printf("Starting background Scheduler (Interval: %ds)...\n", cfg.Scheduler.IntervalSeconds)
 		go func() {
 			interval := cfg.Scheduler.IntervalSeconds
 			if interval <= 0 {
@@ -145,11 +176,45 @@ func main() {
 			}
 			time.Sleep(15 * time.Second)
 
+			// 讀取 Token
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				fmt.Printf("[Scheduler] Error getting home directory: %v\n", err)
+				return
+			}
+			tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
+			tokenBytes, err := os.ReadFile(tokenPath)
+			if err != nil {
+				fmt.Printf("[Scheduler] Error reading GitLab token file at %s: %v\n", tokenPath, err)
+				return
+			}
+			token := strings.TrimSpace(string(tokenBytes))
+
+			gitlabURL := cfg.Scheduler.GitLabURL
+			if gitlabURL == "" {
+				gitlabURL = "https://git.efaipd.com"
+			}
+
+			// 自動探測專案與使用者
+			projectPath, err := getGitLabProjectPath()
+			if err != nil {
+				fmt.Printf("[Scheduler] Error detecting GitLab project path: %v\n", err)
+				return
+			}
+			fmt.Printf("[Scheduler] Detected project path: %s\n", projectPath)
+
+			username, err := getGitLabUsername(gitlabURL, token)
+			if err != nil {
+				fmt.Printf("[Scheduler] Warning: Error detecting GitLab username: %v\n", err)
+			} else {
+				fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
+			}
+
 			processedMRs := make(map[int]string)
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				scanGitLabMRs(cfg, manager, processedMRs)
+				scanGitLabMRs(gitlabURL, token, projectPath, username, manager, processedMRs)
 				select {
 				case <-ticker.C:
 					continue
