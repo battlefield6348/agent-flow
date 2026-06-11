@@ -318,11 +318,6 @@ func (w *Worker) runProcess() {
 		}
 	}()
 
-	if w.Config.InitialInstruction != "" {
-		time.Sleep(3 * time.Second)
-		w.SendInput(w.Config.InitialInstruction)
-	}
-
 	for {
 		time.Sleep(10 * time.Second)
 		if !w.IsRunning() {

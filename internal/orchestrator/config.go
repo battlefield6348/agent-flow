@@ -21,17 +21,16 @@ type Config struct {
 }
 
 type CollaboratorConfig struct {
-	ID                 string            `yaml:"id"`
-	Name               string            `yaml:"name"`
-	Tag                string            `yaml:"tag"` // 用於 TG 的標籤，例如 #dev
-	Cmd                string            `yaml:"cmd"`
-	Args               []string          `yaml:"args"`
-	Tags               []string          `yaml:"tags"`
-	Skills             []string          `yaml:"skills"`
-	InitialInstruction string            `yaml:"initial_instruction"`
-	Env                map[string]string `yaml:"env"`
-	TGPrefix           string            `yaml:"tg_prefix"`
-	Workspace          string            `yaml:"workspace"`
+	ID        string            `yaml:"id"`
+	Name      string            `yaml:"name"`
+	Tag       string            `yaml:"tag"` // 用於 TG 的標籤，例如 #dev
+	Cmd       string            `yaml:"cmd"`
+	Args      []string          `yaml:"args"`
+	Tags      []string          `yaml:"tags"`
+	Skills    []string          `yaml:"skills"`
+	Env       map[string]string `yaml:"env"`
+	TGPrefix  string            `yaml:"tg_prefix"`
+	Workspace string            `yaml:"workspace"`
 }
 
 func LoadConfig(path string) (*Config, error) {
