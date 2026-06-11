@@ -8,8 +8,6 @@ MAIN_PATH=./cmd/agent-flow/main.go
 build:
 	@echo "Building agent-flow..."
 	go build -ldflags="-s -w" -o agent-flow ${MAIN_PATH}
-	@echo "Building mcp-server..."
-	go build -ldflags="-s -w" -o mcp-server ./cmd/mcp-server/main.go
 
 # --- 核心操作指令 ---
 
