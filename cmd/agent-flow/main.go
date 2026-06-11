@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -31,18 +32,52 @@ func scanGitLabMRs(cfg *orchestrator.Config, manager *orchestrator.WorkerManager
 	if cfg.Scheduler.ProjectPath == "" {
 		return
 	}
-	projectPathEscaped := url.PathEscape(cfg.Scheduler.ProjectPath)
-	apiPath := fmt.Sprintf("projects/%s/merge_requests?state=opened", projectPathEscaped)
 
-	cmd := exec.Command("glab", "api", apiPath)
-	out, err := cmd.Output()
+	// 1. 讀取獨立的 Code review 專用 token
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Printf("[Scheduler] Error calling glab API: %v\n", err)
+		fmt.Printf("[Scheduler] Error getting home directory: %v\n", err)
+		return
+	}
+	tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		fmt.Printf("[Scheduler] Error reading GitLab token file at %s: %v\n", tokenPath, err)
+		return
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+
+	// 2. 構建 API URL
+	gitlabURL := cfg.Scheduler.GitLabURL
+	if gitlabURL == "" {
+		gitlabURL = "https://git.efaipd.com"
+	}
+	projectPathEscaped := url.PathEscape(cfg.Scheduler.ProjectPath)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?state=opened", gitlabURL, projectPathEscaped)
+
+	// 3. 原生 HTTP 請求
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		fmt.Printf("[Scheduler] Error creating HTTP request: %v\n", err)
+		return
+	}
+	req.Header.Set("PRIVATE-TOKEN", token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[Scheduler] Error executing HTTP request: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("[Scheduler] GitLab API returned non-OK status: %s\n", resp.Status)
 		return
 	}
 
 	var mrs []GitLabMR
-	if err := json.Unmarshal(out, &mrs); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&mrs); err != nil {
 		fmt.Printf("[Scheduler] Error parsing MR JSON: %v\n", err)
 		return
 	}
