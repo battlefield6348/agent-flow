@@ -153,7 +153,19 @@ func (w *Worker) runProcess() {
 
 	fmt.Printf("[%s] Engine started in tmux (PTY) mode.\n", sessionID)
 
-	argsStr := strings.TrimSpace(strings.Join(w.Config.Args, " "))
+	var additionalArgs []string
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		for _, skill := range w.Config.Skills {
+			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skill)
+			if _, err := os.Stat(skillPath); err == nil {
+				additionalArgs = append(additionalArgs, "--add-dir", skillPath)
+			}
+		}
+	}
+
+	allArgs := append(w.Config.Args, additionalArgs...)
+	argsStr := strings.TrimSpace(strings.Join(allArgs, " "))
 	var fullCmd string
 	if argsStr != "" {
 		fullCmd = fmt.Sprintf("%s %s", w.Config.Cmd, argsStr)
