@@ -301,6 +301,16 @@ func (w *Worker) runProcess() {
 				fullText = thoughtRegex.ReplaceAllString(fullText, "")
 				fullText = strings.TrimSpace(fullText)
 
+				if w.Config.OnlyFinalResponse {
+					parts := dividerRegex.Split(fullText, -1)
+					if len(parts) > 0 {
+						finalText := strings.TrimSpace(parts[len(parts)-1])
+						finalText = strings.TrimPrefix(finalText, "•")
+						finalText = strings.TrimPrefix(finalText, "*")
+						fullText = strings.TrimSpace(finalText)
+					}
+				}
+
 				w.muLast.Lock()
 				last := w.lastOutput
 				w.muLast.Unlock()
@@ -392,6 +402,9 @@ var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
 
 // 用於過濾 AI 回覆中的 CoT (Chain of Thought) 思考過程，僅回傳最終答案
 var thoughtRegex = regexp.MustCompile(`(?s)<thought>.*?</thought>`)
+
+// 用於識別並分割 CLI TUI 輸出中的步驟分割線，以提取最終的對話答案
+var dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\u2500]{5,}[ \t]*$`)
 
 func cleanANSI(text string) string {
 	// 1. 移除標準 ANSI 逃逸序列
