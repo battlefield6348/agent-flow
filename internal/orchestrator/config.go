@@ -11,9 +11,10 @@ type Config struct {
 		Path string `yaml:"path"`
 	} `yaml:"logs"`
 	Scheduler struct {
-		IntervalSeconds int      `yaml:"interval_seconds"`
-		GitLabURL       string   `yaml:"gitlab_url"`
-		AllowedProjects []string `yaml:"allowed_projects"`
+		IntervalSeconds  int      `yaml:"interval_seconds"`
+		GitLabURL        string   `yaml:"gitlab_url"`
+		AllowedProjects  []string `yaml:"allowed_projects"`
+		AllowedMRAuthors []string `yaml:"allowed_mr_authors"`
 	} `yaml:"scheduler"`
 	Collaborators []CollaboratorConfig `yaml:"collaborators"`
 }

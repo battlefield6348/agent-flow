@@ -23,6 +23,9 @@ type GitLabMR struct {
 	SHA         string `json:"sha"`
 	WebURL      string `json:"web_url"`
 	State       string `json:"state"`
+	Author      struct {
+		Username string `json:"username"`
+	} `json:"author"`
 }
 
 type GitLabTodo struct {
@@ -156,7 +159,7 @@ func findLocalWorkspace(projectPath string) (string, error) {
 	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
 }
 
-func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManager, logDir string, allowedProjects []string) {
+func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManager, logDir string, allowedProjects, allowedMRAuthors []string) {
 	apiURL := fmt.Sprintf("%s/api/v4/todos?state=pending&type=MergeRequest&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -212,6 +215,23 @@ func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManage
 			if !allowed {
 				// 輸出除錯資訊表示該專案不在白名單中而被過濾
 				fmt.Printf("[Scheduler] Debug Todo %d [%s]: Skip (not in allowed_projects whitelist)\n", todo.ID, projectPath)
+				continue
+			}
+		}
+
+		// 檢查是否為指定的 MR 建立者白名單，避免掃描其他人建立的 MR
+		if len(allowedMRAuthors) > 0 {
+			authorAllowed := false
+			mrAuthor := strings.ToLower(strings.TrimSpace(mr.Author.Username))
+			for _, author := range allowedMRAuthors {
+				if strings.ToLower(strings.TrimSpace(author)) == mrAuthor {
+					authorAllowed = true
+					break
+				}
+			}
+			if !authorAllowed {
+				// 輸出除錯資訊表示該 MR 建立者不在白名單中而被過濾
+				fmt.Printf("[Scheduler] Debug Todo %d [%s] MR %d: Skip (MR author '%s' not in allowed_mr_authors whitelist)\n", todo.ID, projectPath, mr.IID, mr.Author.Username)
 				continue
 			}
 		}
@@ -315,7 +335,7 @@ func main() {
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
 		for {
-			scanGitLabTodos(gitlabURL, token, manager, logDir, cfg.Scheduler.AllowedProjects)
+			scanGitLabTodos(gitlabURL, token, manager, logDir, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors)
 			select {
 			case <-ticker.C:
 				continue
