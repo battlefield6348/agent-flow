@@ -27,6 +27,28 @@ type GitLabMR struct {
 	} `json:"reviewers"`
 }
 
+// 讀取本地已處理過的 Merge Requests 記錄以避免重啟後重複評審
+func loadProcessedMRs(logDir string) map[int]string {
+	filePath := filepath.Join(logDir, "processed_mrs.json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return make(map[int]string)
+	}
+	var res map[int]string
+	if err := json.Unmarshal(data, &res); err != nil {
+		return make(map[int]string)
+	}
+	return res
+}
+
+// 將已處理過的 Merge Requests 記錄持久化存檔以供下次載入
+func saveProcessedMRs(logDir string, m map[int]string) {
+	filePath := filepath.Join(logDir, "processed_mrs.json")
+	_ = os.MkdirAll(logDir, 0755)
+	data, _ := json.MarshalIndent(m, "", "  ")
+	_ = os.WriteFile(filePath, data, 0644)
+}
+
 func getProjectPathFromWebURL(webURL string) (string, error) {
 	parsed, err := url.Parse(webURL)
 	if err != nil {
@@ -123,7 +145,7 @@ func findLocalWorkspace(projectPath string) (string, error) {
 	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
 }
 
-func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string) {
+func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string, logDir string, isFirstLaunch bool) {
 	apiURL := fmt.Sprintf("%s/api/v4/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -191,11 +213,18 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 			lastSHA, exists := processedMRs[mr.IID]
 			if !exists || lastSHA != mr.SHA {
 				if !exists {
+					if isFirstLaunch {
+						fmt.Printf("[Scheduler] First launch: Marked MR %d (%s) as processed without triggering (SHA: %s)\n", mr.IID, mr.Title, mr.SHA)
+						processedMRs[mr.IID] = mr.SHA
+						saveProcessedMRs(logDir, processedMRs)
+						continue
+					}
 					fmt.Printf("[Scheduler]   -> Target triggered: New review task found (SHA: %s)\n", mr.SHA)
 				} else {
 					fmt.Printf("[Scheduler]   -> Target triggered: Commit updated (Old SHA: %s -> New SHA: %s)\n", lastSHA, mr.SHA)
 				}
 				processedMRs[mr.IID] = mr.SHA
+				saveProcessedMRs(logDir, processedMRs)
 				fmt.Printf("[Scheduler] Resolving local workspace for MR %d...\n", mr.IID)
 
 				projectPath, err := getProjectPathFromWebURL(mr.WebURL)
@@ -285,11 +314,15 @@ func main() {
 				fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
 			}
 
-			processedMRs := make(map[int]string)
+			// 載入歷史記錄以防止重啟後重複評審舊任務
+			processedMRs := loadProcessedMRs(logDir)
+			isFirstLaunch := len(processedMRs) == 0
+
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs)
+				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs, logDir, isFirstLaunch)
+				isFirstLaunch = false
 				select {
 				case <-ticker.C:
 					continue
