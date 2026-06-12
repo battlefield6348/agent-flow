@@ -22,13 +22,10 @@ type Config struct {
 type CollaboratorConfig struct {
 	ID                string            `yaml:"id"`
 	Name              string            `yaml:"name"`
-	Tag               string            `yaml:"tag"` // 用於 TG 的標籤，例如 #dev
 	Cmd               string            `yaml:"cmd"`
 	Args              []string          `yaml:"args"`
-	Tags              []string          `yaml:"tags"`
 	Skills            []string          `yaml:"skills"`
 	Env               map[string]string `yaml:"env"`
-	TGPrefix          string            `yaml:"tg_prefix"`
 	InputPrefix       string            `yaml:"input_prefix"`
 	OnlyFinalResponse bool              `yaml:"only_final_response"`
 	Workspace         string            `yaml:"workspace"`

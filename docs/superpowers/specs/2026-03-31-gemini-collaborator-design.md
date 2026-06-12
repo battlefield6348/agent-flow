@@ -51,10 +51,8 @@ scheduler:
 collaborators:
   - id: "reviewer"
     name: "架構評審 (Reviewer)"
-    tag: "reviewer"
     cmd: "agy"
     args: []
-    tags: ["reviewer", "security"]
     skills: ["gitlab-professional-reviewer"]
 ```
 
