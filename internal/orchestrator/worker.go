@@ -19,6 +19,22 @@ type Worker struct {
 	outputCallback func(string)
 	lastOutput     string
 	muLast         sync.Mutex
+	isBusy         bool
+	muBusy         sync.Mutex
+}
+
+// 判定此 Worker 是否正在執行對話任務中
+func (w *Worker) IsBusy() bool {
+	w.muBusy.Lock()
+	defer w.muBusy.Unlock()
+	return w.isBusy
+}
+
+// 設定此 Worker 的忙碌狀態
+func (w *Worker) setBusy(busy bool) {
+	w.muBusy.Lock()
+	w.isBusy = busy
+	w.muBusy.Unlock()
 }
 
 func (w *Worker) SetOutputCallback(cb func(string)) {
@@ -233,141 +249,7 @@ func (w *Worker) runProcess() {
 		for {
 			select {
 			case input := <-w.inputCh:
-				fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
-
-				// 等待 AI 進入就緒狀態，避免在 AI 還在前一次處理中就發送新輸入
-				for i := 0; i < 45; i++ {
-					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-					out, _ := checkCmd.Output()
-					if w.isPromptReady(string(out)) {
-						break
-					}
-					time.Sleep(2 * time.Second)
-				}
-
-				// 記錄發送問題前的終端歷史，以便後續比對出這次問題的回答內容
-				linesBefore, err := w.getHistoryLines(sessionID)
-				var N int
-				if err == nil {
-					N = len(linesBefore)
-				}
-
-				// 將輸入傳送到 tmux 視窗內，並模擬按下 Enter 鍵以執行
-				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", input).Run()
-				time.Sleep(500 * time.Millisecond)
-				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
-				_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
-
-				// 稍作延遲，確保指令已經開始在 tmux 中執行，避免馬上判定為 READY
-				time.Sleep(2 * time.Second)
-
-				// 持續偵測 tmux 畫面內容不再變化，且重新出現 Prompt 代表執行完畢
-				maxPolls := 3600
-				var lastScreen string
-				sameCount := 0
-				for poll := 0; poll < maxPolls; poll++ {
-					time.Sleep(1 * time.Second)
-					if w.isPaneDead(sessionID) {
-						fmt.Printf("[%s] Detected pane dead during polling, extracting last output.\n", sessionID)
-						break
-					}
-					checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-					out, _ := checkCmd.Output()
-					currScreen := string(out)
-
-					currClean := cleanANSI(currScreen)
-					lastClean := cleanANSI(lastScreen)
-
-					if currClean == lastClean && currClean != "" {
-						sameCount++
-					} else {
-						sameCount = 0
-					}
-					lastScreen = currScreen
-
-					if sameCount >= 2 {
-						if w.isPromptReady(currScreen) {
-							break
-						}
-					}
-				}
-
-				// 抓取執行完畢後的完整歷史，並切分出新增的文字行
-				linesAfter, err := w.getHistoryLines(sessionID)
-				if err != nil {
-					fmt.Printf("[%s] Error getting history after: %v\n", sessionID, err)
-					continue
-				}
-
-				var newLines []string
-				if len(linesAfter) > N {
-					newLines = linesAfter[N:]
-				} else {
-					newLines = linesAfter
-				}
-
-				// 過濾與清理每一行，移除 ANSI 控制字元與回顯問題等雜訊
-				var cleanLines []string
-				for _, line := range newLines {
-					cleaned := cleanANSI(line)
-					if w.shouldIgnore(cleaned) {
-						continue
-					}
-
-					// 移除提示符並比對是否為輸入回顯，避免重複將問題傳回 Telegram
-					trimmedLine := strings.TrimSpace(cleaned)
-					for _, p := range []string{">", "›", "»", "🤖"} {
-						trimmedLine = strings.TrimPrefix(trimmedLine, p)
-						trimmedLine = strings.TrimSpace(trimmedLine)
-					}
-					if trimmedLine == strings.TrimSpace(input) {
-						continue
-					}
-
-					if trimmedLine == "" {
-						continue
-					}
-
-					cleanLines = append(cleanLines, cleaned)
-				}
-
-				// 拼接成完整的回答
-				fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
-				fullText = thoughtRegex.ReplaceAllString(fullText, "")
-				fullText = strings.TrimSpace(fullText)
-
-				if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
-					parts := dividerRegex.Split(fullText, -1)
-					if len(parts) > 0 {
-						finalText := strings.TrimSpace(parts[len(parts)-1])
-						finalText = strings.TrimPrefix(finalText, "•")
-						finalText = strings.TrimPrefix(finalText, "*")
-						fullText = strings.TrimSpace(finalText)
-					}
-				}
-
-				w.muLast.Lock()
-				last := w.lastOutput
-				w.muLast.Unlock()
-
-				if fullText != "" && fullText != strings.TrimSpace(last) {
-					// 確保記錄目錄存在，以便寫入答案檔案
-					_ = os.MkdirAll(w.LogDir, 0755)
-					answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
-					if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
-						fmt.Printf("[%s] Error writing answer file: %v\n", sessionID, err)
-					} else {
-						fmt.Printf("[%s] Wrote answer to file (%d bytes): %s\n", sessionID, len(fullText), fullText)
-					}
-
-					if w.outputCallback != nil {
-						w.outputCallback(fullText)
-					}
-					w.muLast.Lock()
-					w.lastOutput = fullText
-					w.muLast.Unlock()
-				}
-
+				w.handleInput(input, sessionID)
 			case <-stopInput:
 				return
 			case <-w.stopCh:
@@ -393,6 +275,147 @@ func (w *Worker) runProcess() {
 			return
 		default:
 		}
+	}
+}
+
+// 處理來自通道的評審或開發指令，並追蹤其忙碌狀態與結果輸出
+func (w *Worker) handleInput(input string, sessionID string) {
+	w.setBusy(true)
+	defer w.setBusy(false)
+
+	fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
+
+	// 等待 AI 進入就緒狀態，避免在 AI 還在前一次處理中就發送新輸入
+	for i := 0; i < 45; i++ {
+		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+		out, _ := checkCmd.Output()
+		if w.isPromptReady(string(out)) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// 記錄發送問題前的終端歷史，以便後續比對出這次問題的回答內容
+	linesBefore, err := w.getHistoryLines(sessionID)
+	var N int
+	if err == nil {
+		N = len(linesBefore)
+	}
+
+	// 將輸入傳送到 tmux 視窗內，並模擬按下 Enter 鍵以執行
+	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", input).Run()
+	time.Sleep(500 * time.Millisecond)
+	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+
+	// 稍作延遲，確保指令已經開始在 tmux 中執行，避免馬上判定為 READY
+	time.Sleep(2 * time.Second)
+
+	// 持續偵測 tmux 畫面內容不再變化，且重新出現 Prompt 代表執行完畢
+	maxPolls := 3600
+	var lastScreen string
+	sameCount := 0
+	for poll := 0; poll < maxPolls; poll++ {
+		time.Sleep(1 * time.Second)
+		if w.isPaneDead(sessionID) {
+			fmt.Printf("[%s] Detected pane dead during polling, extracting last output.\n", sessionID)
+			break
+		}
+		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+		out, _ := checkCmd.Output()
+		currScreen := string(out)
+
+		currClean := cleanANSI(currScreen)
+		lastClean := cleanANSI(lastScreen)
+
+		if currClean == lastClean && currClean != "" {
+			sameCount++
+		} else {
+			sameCount = 0
+		}
+		lastScreen = currScreen
+
+		if sameCount >= 2 {
+			if w.isPromptReady(currScreen) {
+				break
+			}
+		}
+	}
+
+	// 抓取執行完畢後的完整歷史，並切分出新增的文字行
+	linesAfter, err := w.getHistoryLines(sessionID)
+	if err != nil {
+		fmt.Printf("[%s] Error getting history after: %v\n", sessionID, err)
+		return
+	}
+
+	var newLines []string
+	if len(linesAfter) > N {
+		newLines = linesAfter[N:]
+	} else {
+		newLines = linesAfter
+	}
+
+	// 過濾與清理每一行，移除 ANSI 控制字元與回顯問題等雜訊
+	var cleanLines []string
+	for _, line := range newLines {
+		cleaned := cleanANSI(line)
+		if w.shouldIgnore(cleaned) {
+			continue
+		}
+
+		// 移除提示符並比對是否為輸入回顯，避免重複將問題傳回
+		trimmedLine := strings.TrimSpace(cleaned)
+		for _, p := range []string{">", "›", "»", "🤖"} {
+			trimmedLine = strings.TrimPrefix(trimmedLine, p)
+			trimmedLine = strings.TrimSpace(trimmedLine)
+		}
+		if trimmedLine == strings.TrimSpace(input) {
+			continue
+		}
+
+		if trimmedLine == "" {
+			continue
+		}
+
+		cleanLines = append(cleanLines, cleaned)
+	}
+
+	// 拼接成完整的回答
+	fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
+	fullText = thoughtRegex.ReplaceAllString(fullText, "")
+	fullText = strings.TrimSpace(fullText)
+
+	if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
+		parts := dividerRegex.Split(fullText, -1)
+		if len(parts) > 0 {
+			finalText := strings.TrimSpace(parts[len(parts)-1])
+			finalText = strings.TrimPrefix(finalText, "•")
+			finalText = strings.TrimPrefix(finalText, "*")
+			fullText = strings.TrimSpace(finalText)
+		}
+	}
+
+	w.muLast.Lock()
+	last := w.lastOutput
+	w.muLast.Unlock()
+
+	if fullText != "" && fullText != strings.TrimSpace(last) {
+		// 確保記錄目錄存在，以便寫入答案檔案
+		_ = os.MkdirAll(w.LogDir, 0755)
+		answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
+		if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
+			fmt.Printf("[%s] Error writing answer file: %v\n", sessionID, err)
+		} else {
+			fmt.Printf("[%s] Wrote answer to file (%d bytes): %s\n", sessionID, len(fullText), fullText)
+		}
+
+		if w.outputCallback != nil {
+			w.outputCallback(fullText)
+		}
+		w.muLast.Lock()
+		w.lastOutput = fullText
+		w.muLast.Unlock()
 	}
 }
 

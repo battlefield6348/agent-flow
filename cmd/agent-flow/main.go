@@ -212,6 +212,20 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 		if isTagged {
 			lastSHA, exists := processedMRs[mr.IID]
 			if !exists || lastSHA != mr.SHA {
+				// 檢查 reviewer 是否正在執行任務中以避免強行中斷
+				reviewerBusy := false
+				for _, w := range manager.Workers {
+					if w.Config.ID == "reviewer" && w.IsBusy() {
+						reviewerBusy = true
+						break
+					}
+				}
+
+				if reviewerBusy {
+					fmt.Printf("[Scheduler] Reviewer is currently BUSY. Postponing MR %d review until next scan...\n", mr.IID)
+					continue
+				}
+
 				if !exists {
 					if isFirstLaunch {
 						fmt.Printf("[Scheduler] First launch: Marked MR %d (%s) as processed without triggering (SHA: %s)\n", mr.IID, mr.Title, mr.SHA)
