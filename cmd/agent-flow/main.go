@@ -22,31 +22,41 @@ type GitLabMR struct {
 	Description string `json:"description"`
 	SHA         string `json:"sha"`
 	WebURL      string `json:"web_url"`
-	Reviewers   []struct {
-		Username string `json:"username"`
-	} `json:"reviewers"`
 }
 
-// 讀取本地已處理過的 Merge Requests 記錄以避免重啟後重複評審
-func loadProcessedMRs(logDir string) map[int]string {
-	filePath := filepath.Join(logDir, "processed_mrs.json")
-	data, err := os.ReadFile(filePath)
+type GitLabTodo struct {
+	ID         int      `json:"id"`
+	ActionName string   `json:"action_name"`
+	TargetType string   `json:"target_type"`
+	Target     GitLabMR `json:"target"`
+	Project    struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+	} `json:"project"`
+}
+
+// 將 GitLab 上的特定待辦事項標記為已處理以避免重複掃描
+func markTodoAsDone(gitlabURL, token string, todoID int) {
+	apiURL := fmt.Sprintf("%s/api/v4/todos/%d/mark_as_done", gitlabURL, todoID)
+	req, err := http.NewRequest("POST", apiURL, nil)
 	if err != nil {
-		return make(map[int]string)
+		fmt.Printf("[Scheduler] Error creating mark_as_done request: %v\n", err)
+		return
 	}
-	var res map[int]string
-	if err := json.Unmarshal(data, &res); err != nil {
-		return make(map[int]string)
-	}
-	return res
-}
+	req.Header.Set("PRIVATE-TOKEN", token)
 
-// 將已處理過的 Merge Requests 記錄持久化存檔以供下次載入
-func saveProcessedMRs(logDir string, m map[int]string) {
-	filePath := filepath.Join(logDir, "processed_mrs.json")
-	_ = os.MkdirAll(logDir, 0755)
-	data, _ := json.MarshalIndent(m, "", "  ")
-	_ = os.WriteFile(filePath, data, 0644)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[Scheduler] Error executing mark_as_done: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		fmt.Printf("[Scheduler] Warning: mark_as_done returned status: %s\n", resp.Status)
+	} else {
+		fmt.Printf("[Scheduler] Todo %d marked as DONE.\n", todoID)
+	}
 }
 
 func getProjectPathFromWebURL(webURL string) (string, error) {
@@ -145,8 +155,8 @@ func findLocalWorkspace(projectPath string) (string, error) {
 	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
 }
 
-func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string, logDir string, isFirstLaunch bool, allowedProjects []string) {
-	apiURL := fmt.Sprintf("%s/api/v4/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100", gitlabURL)
+func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManager, logDir string, allowedProjects []string) {
+	apiURL := fmt.Sprintf("%s/api/v4/todos?state=pending&type=MergeRequest&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
@@ -168,50 +178,21 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 		return
 	}
 
-	var mrs []GitLabMR
-	if err := json.NewDecoder(resp.Body).Decode(&mrs); err != nil {
-		fmt.Printf("[Scheduler] Error parsing MR JSON: %v\n", err)
+	var todos []GitLabTodo
+	if err := json.NewDecoder(resp.Body).Decode(&todos); err != nil {
+		fmt.Printf("[Scheduler] Error parsing Todo JSON: %v\n", err)
 		return
 	}
 
-	fmt.Printf("[Scheduler] Fetching opened MRs from GitLab... (Total opened: %d)\n", len(mrs))
+	if len(todos) > 0 {
+		fmt.Printf("[Scheduler] Fetching pending Todos from GitLab... (Total pending: %d)\n", len(todos))
+	}
 
-	for _, mr := range mrs {
-		isTagged := false
-		descLower := strings.ToLower(mr.Description)
-		titleLower := strings.ToLower(mr.Title)
-		hasKeyword := strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer")
-		tagUsername := ""
-		hasUserTag := false
-		if username != "" {
-			tagUsername = "@" + strings.ToLower(username)
-			// 判定標題或描述中是否有出現 @username 的標記方式
-			if strings.Contains(descLower, tagUsername) || strings.Contains(titleLower, tagUsername) {
-				hasUserTag = true
-			}
-		}
+	for _, todo := range todos {
+		projectPath := todo.Project.PathWithNamespace
+		mr := todo.Target
 
-		assignedToMe := false
-		if username != "" {
-			for _, r := range mr.Reviewers {
-				if strings.ToLower(r.Username) == strings.ToLower(username) {
-					assignedToMe = true
-					break
-				}
-			}
-		}
-
-		if hasKeyword || hasUserTag || assignedToMe {
-			isTagged = true
-		}
-
-		// 預先解析專案路徑以利在日誌中標示
-		projectPath, err := getProjectPathFromWebURL(mr.WebURL)
-		if err != nil {
-			projectPath = "unknown"
-		}
-
-		// 檢查是否在允許的專案白名單中，避免掃描非維護的專案
+		// 檢查是否在允許的專案白名單中，避免處理非維護專案的待辦
 		if len(allowedProjects) > 0 {
 			allowed := false
 			for _, p := range allowedProjects {
@@ -221,72 +202,52 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 				}
 			}
 			if !allowed {
-				// 輸出除錯資訊表示該專案不在白名單中被過濾
-				fmt.Printf("[Scheduler] Debug MR %d [%s]: Skip (not in allowed_projects whitelist)\n", mr.IID, projectPath)
+				// 輸出除錯資訊表示該專案不在白名單中而被過濾
+				fmt.Printf("[Scheduler] Debug Todo %d [%s]: Skip (not in allowed_projects whitelist)\n", todo.ID, projectPath)
 				continue
 			}
 		}
 
-		// 輸出除錯資訊以利分析每筆 Merge Request 的比對過程
-		fmt.Printf("[Scheduler] Debug MR %d [%s]: title=%q, hasKeyword=%t, hasUserTag=%t (%s), assignedToMe=%t (Username: %s)\n",
-			mr.IID, projectPath, mr.Title, hasKeyword, hasUserTag, tagUsername, assignedToMe, username)
-
-		if isTagged {
-			lastSHA, exists := processedMRs[mr.IID]
-			if !exists || lastSHA != mr.SHA {
-				// 檢查 reviewer 是否正在執行任務中以避免強行中斷
-				reviewerBusy := false
-				for _, w := range manager.Workers {
-					if w.Config.ID == "reviewer" && w.IsBusy() {
-						reviewerBusy = true
-						break
-					}
-				}
-
-				if reviewerBusy {
-					fmt.Printf("[Scheduler] Reviewer is currently BUSY. Postponing MR %d [%s] review until next scan...\n", mr.IID, projectPath)
-					continue
-				}
-
-				if !exists {
-					if isFirstLaunch {
-						fmt.Printf("[Scheduler] First launch: Marked MR %d [%s] (%s) as processed without triggering (SHA: %s)\n", mr.IID, projectPath, mr.Title, mr.SHA)
-						processedMRs[mr.IID] = mr.SHA
-						saveProcessedMRs(logDir, processedMRs)
-						continue
-					}
-					fmt.Printf("[Scheduler]   -> Target triggered: New review task found for MR %d [%s] (SHA: %s)\n", mr.IID, projectPath, mr.SHA)
-				} else {
-					fmt.Printf("[Scheduler]   -> Target triggered: Commit updated for MR %d [%s] (Old SHA: %s -> New SHA: %s)\n", mr.IID, projectPath, lastSHA, mr.SHA)
-				}
-				processedMRs[mr.IID] = mr.SHA
-				saveProcessedMRs(logDir, processedMRs)
-				fmt.Printf("[Scheduler] Resolving local workspace for MR %d [%s]...\n", mr.IID, projectPath)
-
-				subDir, err := findLocalWorkspace(projectPath)
-				if err != nil {
-					fmt.Printf("[Scheduler] Error locating local workspace: %v\n", err)
-					continue
-				}
-
-				for _, w := range manager.Workers {
-					if w.Config.ID == "reviewer" {
-						if w.Config.Workspace != subDir {
-							fmt.Printf("[Scheduler] Switching reviewer workspace from '%s' to '%s'...\n", w.Config.Workspace, subDir)
-							w.Stop()
-							w.Config.Workspace = subDir
-							w.Start()
-							time.Sleep(15 * time.Second)
-						}
-
-						instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
-						w.SendInput(instruction)
-					}
-				}
-			} else {
-				fmt.Printf("[Scheduler]   -> Target skipped: Already processed with SHA %s\n", mr.SHA)
+		// 檢查 reviewer 是否正在執行任務中以避免強行中斷
+		reviewerBusy := false
+		for _, w := range manager.Workers {
+			if w.Config.ID == "reviewer" && w.IsBusy() {
+				reviewerBusy = true
+				break
 			}
 		}
+
+		if reviewerBusy {
+			fmt.Printf("[Scheduler] Reviewer is currently BUSY. Postponing Todo %d (MR %d) [%s] review until next scan...\n", todo.ID, mr.IID, projectPath)
+			continue
+		}
+
+		fmt.Printf("[Scheduler] -> Target triggered: New pending Todo found for MR %d [%s] (Action: %s)\n", mr.IID, projectPath, todo.ActionName)
+		fmt.Printf("[Scheduler] Resolving local workspace for MR %d [%s]...\n", mr.IID, projectPath)
+
+		subDir, err := findLocalWorkspace(projectPath)
+		if err != nil {
+			fmt.Printf("[Scheduler] Error locating local workspace: %v\n", err)
+			continue
+		}
+
+		for _, w := range manager.Workers {
+			if w.Config.ID == "reviewer" {
+				if w.Config.Workspace != subDir {
+					fmt.Printf("[Scheduler] Switching reviewer workspace from '%s' to '%s'...\n", w.Config.Workspace, subDir)
+					w.Stop()
+					w.Config.Workspace = subDir
+					w.Start()
+					time.Sleep(15 * time.Second)
+				}
+
+				instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
+				w.SendInput(instruction)
+			}
+		}
+
+		// 成功指派任務後，將該 Todo 標記為 Done，避免重複處理
+		markTodoAsDone(gitlabURL, token, todo.ID)
 	}
 }
 
@@ -344,15 +305,10 @@ func main() {
 				fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
 			}
 
-			// 載入歷史記錄以防止重啟後重複評審舊任務
-			processedMRs := loadProcessedMRs(logDir)
-			isFirstLaunch := len(processedMRs) == 0
-
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs, logDir, isFirstLaunch, cfg.Scheduler.AllowedProjects)
-				isFirstLaunch = false
+				scanGitLabTodos(gitlabURL, token, manager, logDir, cfg.Scheduler.AllowedProjects)
 				select {
 				case <-ticker.C:
 					continue
