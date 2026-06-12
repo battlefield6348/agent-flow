@@ -145,7 +145,7 @@ func findLocalWorkspace(projectPath string) (string, error) {
 	return "", fmt.Errorf("local workspace not found for project: %s", projectPath)
 }
 
-func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string, logDir string, isFirstLaunch bool) {
+func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.WorkerManager, processedMRs map[int]string, logDir string, isFirstLaunch bool, allowedProjects []string) {
 	apiURL := fmt.Sprintf("%s/api/v4/merge_requests?state=opened&scope=all&order_by=updated_at&sort=desc&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -209,6 +209,22 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 		projectPath, err := getProjectPathFromWebURL(mr.WebURL)
 		if err != nil {
 			projectPath = "unknown"
+		}
+
+		// 檢查是否在允許的專案白名單中，避免掃描非維護的專案
+		if len(allowedProjects) > 0 {
+			allowed := false
+			for _, p := range allowedProjects {
+				if strings.ToLower(strings.TrimSpace(p)) == strings.ToLower(projectPath) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				// 輸出除錯資訊表示該專案不在白名單中被過濾
+				fmt.Printf("[Scheduler] Debug MR %d [%s]: Skip (not in allowed_projects whitelist)\n", mr.IID, projectPath)
+				continue
+			}
 		}
 
 		// 輸出除錯資訊以利分析每筆 Merge Request 的比對過程
@@ -335,7 +351,7 @@ func main() {
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
 			for {
-				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs, logDir, isFirstLaunch)
+				scanGitLabMRs(gitlabURL, token, username, manager, processedMRs, logDir, isFirstLaunch, cfg.Scheduler.AllowedProjects)
 				isFirstLaunch = false
 				select {
 				case <-ticker.C:
