@@ -1,4 +1,4 @@
-.PHONY: build start stop status clean fmt test logs attach-p attach-c check-tools
+.PHONY: build start stop status clean fmt test logs attach-r check-tools
 
 # 基本變數設定
 BINARY_NAME=collaborator
@@ -21,7 +21,6 @@ stop:
 	@echo "Stopping all AI services..."
 	@# 先優雅關閉 tmux session
 	@tmux kill-session -t reviewer 2>/dev/null || true
-	@tmux kill-session -t coder 2>/dev/null || true
 	@# 再精確殺掉 agent-flow 執行檔
 	@pkill -x agent-flow 2>/dev/null || true
 	@ps aux | grep "go run ./cmd/agent-flow/main.go" | grep -v grep | awk '{print $$2}' | xargs -r kill -9 || true
@@ -47,17 +46,11 @@ attach-r:
 	@sleep 2
 	@tmux attach -t reviewer
 
-# 進入 Coder 現場 (tmux)
-attach-c:
-	@echo "TIP: Press 'Ctrl+b' then 'd' to exit WITHOUT killing the AI."
-	@sleep 2
-	@tmux attach -t coder
-
 # 查看運行狀態
 status:
 	@echo "Current AI Sessions:"
 	@echo "----------------------------------------------------"
-	@tmux ls 2>/dev/null | grep -E 'reviewer|coder' || echo "All AI Workers are OFFLINE."
+	@tmux ls 2>/dev/null | grep -E 'reviewer' || echo "All AI Workers are OFFLINE."
 	@echo "----------------------------------------------------"
 
 # --- 輔助指令 ---
