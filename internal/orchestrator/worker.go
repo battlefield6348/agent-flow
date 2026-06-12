@@ -206,6 +206,27 @@ func (w *Worker) runProcess() {
 		fmt.Printf("[%s] WARNING: Ready pattern not detected, proceeding anyway...\n", sessionID)
 	}
 
+	if ready && len(w.Config.Skills) > 0 {
+		for _, skill := range w.Config.Skills {
+			fmt.Printf("[%s] Injecting skill: %s\n", sessionID, skill)
+			skillCmd := fmt.Sprintf("/superpowers:%s", skill)
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", skillCmd).Run()
+			time.Sleep(500 * time.Millisecond)
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+
+			// 由於注入 skill 需要時間載入，我們主動等待其完成以避免干擾後續輸入
+			time.Sleep(5 * time.Second)
+			for i := 0; i < 30; i++ {
+				checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+				out, _ := checkCmd.Output()
+				if w.isPromptReady(string(out)) {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}
+
 	stopInput := make(chan struct{})
 	go func() {
 		for {
