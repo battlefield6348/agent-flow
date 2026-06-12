@@ -224,6 +224,22 @@ func (w *Worker) runProcess() {
 				}
 				time.Sleep(2 * time.Second)
 			}
+
+			// 注入 skill 後通知 AI 待命，防止其自主觸發掃描
+			standbyCmd := "請待命，等候我給予你具體的 Merge Request 評審任務。"
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", standbyCmd).Run()
+			time.Sleep(500 * time.Millisecond)
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+
+			time.Sleep(5 * time.Second)
+			for i := 0; i < 30; i++ {
+				checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
+				out, _ := checkCmd.Output()
+				if w.isPromptReady(string(out)) {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
 		}
 	}
 
