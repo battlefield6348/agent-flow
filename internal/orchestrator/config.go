@@ -20,15 +20,14 @@ type Config struct {
 }
 
 type CollaboratorConfig struct {
-	ID                string            `yaml:"id"`
-	Name              string            `yaml:"name"`
-	Cmd               string            `yaml:"cmd"`
-	Args              []string          `yaml:"args"`
-	Skills            []string          `yaml:"skills"`
-	Env               map[string]string `yaml:"env"`
-	InputPrefix       string            `yaml:"input_prefix"`
-	OnlyFinalResponse bool              `yaml:"only_final_response"`
-	Workspace         string            `yaml:"workspace"`
+	ID                string   `yaml:"id"`
+	Name              string   `yaml:"name"`
+	Cmd               string   `yaml:"cmd"`
+	Args              []string `yaml:"args"`
+	Skills            []string `yaml:"skills"`
+	InputPrefix       string   `yaml:"input_prefix"`
+	OnlyFinalResponse bool     `yaml:"only_final_response"`
+	Workspace         string   `yaml:"workspace"`
 }
 
 func LoadConfig(path string) (*Config, error) {
