@@ -278,52 +278,50 @@ func main() {
 	fmt.Println("Starting local Workers in tmux...")
 	manager.StartAll()
 
-	if cfg.Scheduler.Enable {
-		fmt.Printf("Starting background Scheduler (Interval: %ds)...\n", cfg.Scheduler.IntervalSeconds)
-		go func() {
-			interval := cfg.Scheduler.IntervalSeconds
-			if interval <= 0 {
-				interval = 60
-			}
-			time.Sleep(15 * time.Second)
+	fmt.Printf("Starting background Scheduler (Interval: %ds)...\n", cfg.Scheduler.IntervalSeconds)
+	go func() {
+		interval := cfg.Scheduler.IntervalSeconds
+		if interval <= 0 {
+			interval = 60
+		}
+		time.Sleep(15 * time.Second)
 
-			// 讀取 Token
-			homeDir, err := os.UserHomeDir()
-			if err != nil {
-				fmt.Printf("[Scheduler] Error getting home directory: %v\n", err)
-				return
-			}
-			tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
-			tokenBytes, err := os.ReadFile(tokenPath)
-			if err != nil {
-				fmt.Printf("[Scheduler] Error reading GitLab token file at %s: %v\n", tokenPath, err)
-				return
-			}
-			token := strings.TrimSpace(string(tokenBytes))
+		// 讀取 Token
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Printf("[Scheduler] Error getting home directory: %v\n", err)
+			return
+		}
+		tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
+		tokenBytes, err := os.ReadFile(tokenPath)
+		if err != nil {
+			fmt.Printf("[Scheduler] Error reading GitLab token file at %s: %v\n", tokenPath, err)
+			return
+		}
+		token := strings.TrimSpace(string(tokenBytes))
 
-			gitlabURL := cfg.Scheduler.GitLabURL
-			if gitlabURL == "" {
-				gitlabURL = "https://git.efaipd.com"
-			}
+		gitlabURL := cfg.Scheduler.GitLabURL
+		if gitlabURL == "" {
+			gitlabURL = "https://git.efaipd.com"
+		}
 
-			username, err := getGitLabUsername(gitlabURL, token)
-			if err != nil {
-				fmt.Printf("[Scheduler] Warning: Error detecting GitLab username: %v\n", err)
-			} else {
-				fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
-			}
+		username, err := getGitLabUsername(gitlabURL, token)
+		if err != nil {
+			fmt.Printf("[Scheduler] Warning: Error detecting GitLab username: %v\n", err)
+		} else {
+			fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
+		}
 
-			ticker := time.NewTicker(time.Duration(interval) * time.Second)
-			defer ticker.Stop()
-			for {
-				scanGitLabTodos(gitlabURL, token, manager, logDir, cfg.Scheduler.AllowedProjects)
-				select {
-				case <-ticker.C:
-					continue
-				}
+		ticker := time.NewTicker(time.Duration(interval) * time.Second)
+		defer ticker.Stop()
+		for {
+			scanGitLabTodos(gitlabURL, token, manager, logDir, cfg.Scheduler.AllowedProjects)
+			select {
+			case <-ticker.C:
+				continue
 			}
-		}()
-	}
+		}
+	}()
 
 	fmt.Println("Local Review Monitor Mode is ACTIVE.")
 	fmt.Println("Waiting for GitLab review targets...")
