@@ -205,9 +205,15 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 			isTagged = true
 		}
 
+		// 預先解析專案路徑以利在日誌中標示
+		projectPath, err := getProjectPathFromWebURL(mr.WebURL)
+		if err != nil {
+			projectPath = "unknown"
+		}
+
 		// 輸出除錯資訊以利分析每筆 Merge Request 的比對過程
-		fmt.Printf("[Scheduler] Debug MR %d: title=%q, hasKeyword=%t, hasUserTag=%t (%s), assignedToMe=%t (Username: %s)\n",
-			mr.IID, mr.Title, hasKeyword, hasUserTag, tagUsername, assignedToMe, username)
+		fmt.Printf("[Scheduler] Debug MR %d [%s]: title=%q, hasKeyword=%t, hasUserTag=%t (%s), assignedToMe=%t (Username: %s)\n",
+			mr.IID, projectPath, mr.Title, hasKeyword, hasUserTag, tagUsername, assignedToMe, username)
 
 		if isTagged {
 			lastSHA, exists := processedMRs[mr.IID]
@@ -222,30 +228,24 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 				}
 
 				if reviewerBusy {
-					fmt.Printf("[Scheduler] Reviewer is currently BUSY. Postponing MR %d review until next scan...\n", mr.IID)
+					fmt.Printf("[Scheduler] Reviewer is currently BUSY. Postponing MR %d [%s] review until next scan...\n", mr.IID, projectPath)
 					continue
 				}
 
 				if !exists {
 					if isFirstLaunch {
-						fmt.Printf("[Scheduler] First launch: Marked MR %d (%s) as processed without triggering (SHA: %s)\n", mr.IID, mr.Title, mr.SHA)
+						fmt.Printf("[Scheduler] First launch: Marked MR %d [%s] (%s) as processed without triggering (SHA: %s)\n", mr.IID, projectPath, mr.Title, mr.SHA)
 						processedMRs[mr.IID] = mr.SHA
 						saveProcessedMRs(logDir, processedMRs)
 						continue
 					}
-					fmt.Printf("[Scheduler]   -> Target triggered: New review task found (SHA: %s)\n", mr.SHA)
+					fmt.Printf("[Scheduler]   -> Target triggered: New review task found for MR %d [%s] (SHA: %s)\n", mr.IID, projectPath, mr.SHA)
 				} else {
-					fmt.Printf("[Scheduler]   -> Target triggered: Commit updated (Old SHA: %s -> New SHA: %s)\n", lastSHA, mr.SHA)
+					fmt.Printf("[Scheduler]   -> Target triggered: Commit updated for MR %d [%s] (Old SHA: %s -> New SHA: %s)\n", mr.IID, projectPath, lastSHA, mr.SHA)
 				}
 				processedMRs[mr.IID] = mr.SHA
 				saveProcessedMRs(logDir, processedMRs)
-				fmt.Printf("[Scheduler] Resolving local workspace for MR %d...\n", mr.IID)
-
-				projectPath, err := getProjectPathFromWebURL(mr.WebURL)
-				if err != nil {
-					fmt.Printf("[Scheduler] Error parsing project path from URL: %v\n", err)
-					continue
-				}
+				fmt.Printf("[Scheduler] Resolving local workspace for MR %d [%s]...\n", mr.IID, projectPath)
 
 				subDir, err := findLocalWorkspace(projectPath)
 				if err != nil {
