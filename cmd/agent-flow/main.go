@@ -152,27 +152,41 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 		return
 	}
 
+	fmt.Printf("[Scheduler] Fetching opened MRs from GitLab... (Total opened: %d)\n", len(mrs))
+
 	for _, mr := range mrs {
 		isTagged := false
 		descLower := strings.ToLower(mr.Description)
 		titleLower := strings.ToLower(mr.Title)
-		if strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer") {
-			isTagged = true
-		}
+		hasKeyword := strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer")
+		assignedToMe := false
 		if username != "" {
 			for _, r := range mr.Reviewers {
 				if strings.ToLower(r.Username) == strings.ToLower(username) {
-					isTagged = true
+					assignedToMe = true
 					break
 				}
 			}
 		}
 
+		if hasKeyword || assignedToMe {
+			isTagged = true
+		}
+
+		// 輸出除錯資訊以利分析每筆 Merge Request 的比對過程
+		fmt.Printf("[Scheduler] Debug MR %d: title=%q, hasKeyword=%t, assignedToMe=%t (Username: %s)\n",
+			mr.IID, mr.Title, hasKeyword, assignedToMe, username)
+
 		if isTagged {
 			lastSHA, exists := processedMRs[mr.IID]
 			if !exists || lastSHA != mr.SHA {
+				if !exists {
+					fmt.Printf("[Scheduler]   -> Target triggered: New review task found (SHA: %s)\n", mr.SHA)
+				} else {
+					fmt.Printf("[Scheduler]   -> Target triggered: Commit updated (Old SHA: %s -> New SHA: %s)\n", lastSHA, mr.SHA)
+				}
 				processedMRs[mr.IID] = mr.SHA
-				fmt.Printf("[Scheduler] Found review target: MR %d (%s), resolving local workspace...\n", mr.IID, mr.Title)
+				fmt.Printf("[Scheduler] Resolving local workspace for MR %d...\n", mr.IID)
 
 				projectPath, err := getProjectPathFromWebURL(mr.WebURL)
 				if err != nil {
@@ -200,6 +214,8 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 						w.SendInput(instruction)
 					}
 				}
+			} else {
+				fmt.Printf("[Scheduler]   -> Target skipped: Already processed with SHA %s\n", mr.SHA)
 			}
 		}
 	}
