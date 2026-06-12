@@ -159,6 +159,16 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 		descLower := strings.ToLower(mr.Description)
 		titleLower := strings.ToLower(mr.Title)
 		hasKeyword := strings.Contains(descLower, "#reviewer") || strings.Contains(titleLower, "#reviewer")
+		tagUsername := ""
+		hasUserTag := false
+		if username != "" {
+			tagUsername = "@" + strings.ToLower(username)
+			// 判定標題或描述中是否有出現 @username 的標記方式
+			if strings.Contains(descLower, tagUsername) || strings.Contains(titleLower, tagUsername) {
+				hasUserTag = true
+			}
+		}
+
 		assignedToMe := false
 		if username != "" {
 			for _, r := range mr.Reviewers {
@@ -169,13 +179,13 @@ func scanGitLabMRs(gitlabURL, token, username string, manager *orchestrator.Work
 			}
 		}
 
-		if hasKeyword || assignedToMe {
+		if hasKeyword || hasUserTag || assignedToMe {
 			isTagged = true
 		}
 
 		// 輸出除錯資訊以利分析每筆 Merge Request 的比對過程
-		fmt.Printf("[Scheduler] Debug MR %d: title=%q, hasKeyword=%t, assignedToMe=%t (Username: %s)\n",
-			mr.IID, mr.Title, hasKeyword, assignedToMe, username)
+		fmt.Printf("[Scheduler] Debug MR %d: title=%q, hasKeyword=%t, hasUserTag=%t (%s), assignedToMe=%t (Username: %s)\n",
+			mr.IID, mr.Title, hasKeyword, hasUserTag, tagUsername, assignedToMe, username)
 
 		if isTagged {
 			lastSHA, exists := processedMRs[mr.IID]
