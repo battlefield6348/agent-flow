@@ -22,6 +22,7 @@ type GitLabMR struct {
 	Description string `json:"description"`
 	SHA         string `json:"sha"`
 	WebURL      string `json:"web_url"`
+	State       string `json:"state"`
 }
 
 type GitLabTodo struct {
@@ -191,6 +192,13 @@ func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManage
 	for _, todo := range todos {
 		projectPath := todo.Project.PathWithNamespace
 		mr := todo.Target
+
+		// 若 Merge Request 已經被合併或關閉，則無需再評審，直接自動標記該 Todo 為已讀以清理 GitLab 待辦清單
+		if strings.ToLower(mr.State) != "opened" {
+			fmt.Printf("[Scheduler] Todo %d is associated with a non-opened MR %d [%s] (State: %s), auto-cleaning Todo...\n", todo.ID, mr.IID, projectPath, mr.State)
+			markTodoAsDone(gitlabURL, token, todo.ID)
+			continue
+		}
 
 		// 檢查是否在允許的專案白名單中，避免處理非維護專案的待辦
 		if len(allowedProjects) > 0 {
