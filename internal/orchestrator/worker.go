@@ -208,31 +208,16 @@ func (w *Worker) runProcess() {
 
 	if ready && len(w.Config.Skills) > 0 {
 		for _, skill := range w.Config.Skills {
-			fmt.Printf("[%s] Injecting skill: %s\n", sessionID, skill)
-			skillCmd := fmt.Sprintf("/superpowers:%s", skill)
+			fmt.Printf("[%s] Injecting skill with standby prompt: %s\n", sessionID, skill)
+			// 將待命指令直接附加於 /superpowers 技能加載命令後發送，防止 AI 載入技能後直接自主掃描
+			skillCmd := fmt.Sprintf("/superpowers:%s 請待命，等候我給予你具體的 Merge Request 評審任務。", skill)
 			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", skillCmd).Run()
 			time.Sleep(500 * time.Millisecond)
 			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
 
-			// 由於注入 skill 需要時間載入，我們主動等待其完成以避免干擾後續輸入
+			// 由於技能加載與指令處理需要時間，我們主動等待其完成以避免干擾後續輸入
 			time.Sleep(5 * time.Second)
-			for i := 0; i < 30; i++ {
-				checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-				out, _ := checkCmd.Output()
-				if w.isPromptReady(string(out)) {
-					break
-				}
-				time.Sleep(2 * time.Second)
-			}
-
-			// 注入 skill 後通知 AI 待命，防止其自主觸發掃描
-			standbyCmd := "請待命，等候我給予你具體的 Merge Request 評審任務。"
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", standbyCmd).Run()
-			time.Sleep(500 * time.Millisecond)
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
-
-			time.Sleep(5 * time.Second)
-			for i := 0; i < 30; i++ {
+			for i := 0; i < 45; i++ {
 				checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
 				out, _ := checkCmd.Output()
 				if w.isPromptReady(string(out)) {
