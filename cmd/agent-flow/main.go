@@ -160,6 +160,7 @@ func findLocalWorkspace(projectPath string) (string, error) {
 }
 
 func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManager, logDir string, allowedProjects, allowedMRAuthors []string) {
+	fmt.Println("[Scheduler] Scanning GitLab Todos...")
 	apiURL := fmt.Sprintf("%s/api/v4/todos?state=pending&type=MergeRequest&per_page=100", gitlabURL)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
