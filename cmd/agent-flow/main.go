@@ -190,6 +190,8 @@ func scanGitLabTodos(gitlabURL, token string, manager *orchestrator.WorkerManage
 
 	if len(todos) > 0 {
 		fmt.Printf("[Scheduler] Fetching pending Todos from GitLab... (Total pending: %d)\n", len(todos))
+	} else {
+		fmt.Printf("[Scheduler] Scan complete: 0 pending Todos found.\n")
 	}
 
 	for _, todo := range todos {
