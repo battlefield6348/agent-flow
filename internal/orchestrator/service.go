@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -36,18 +37,18 @@ func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *Wor
 
 // ScanAndAssign 執行掃描與任務分派的核心業務邏輯
 func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects, allowedAuthors []string) error {
-	fmt.Println("[Orchestrator] Scanning GitLab Todos...")
+	slog.Debug("Scanning GitLab Todos")
 	todos, err := s.gitlabRepo.FetchPendingTodos(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch todos failed: %w", err)
 	}
 
 	if len(todos) == 0 {
-		fmt.Println("[Orchestrator] Scan complete: 0 pending Todos found.")
+		slog.Debug("Scan complete: 0 pending Todos found")
 		return nil
 	}
 
-	fmt.Printf("[Orchestrator] Found %d pending Todos.\n", len(todos))
+	slog.Info("Pending Todos found", "count", len(todos))
 
 	for _, todo := range todos {
 		mr := todo.MergeRequest
@@ -55,33 +56,33 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 
 		// 1. 狀態過濾
 		if strings.ToLower(mr.State) != "opened" {
-			fmt.Printf("[Orchestrator] Todo %d MR %d [%s] is not opened (%s), cleaning up...\n", todo.ID, mr.IID, projectPath, mr.State)
+			slog.Info("Cleaning up non-opened MR Todo", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "state", mr.State)
 			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
 			continue
 		}
 
 		// 2. 專案白名單過濾
 		if !s.isAllowed(projectPath, allowedProjects) {
-			fmt.Printf("[Orchestrator] Todo %d [%s]: Skip (not in allowed projects)\n", todo.ID, projectPath)
+			slog.Debug("Skipping Todo: project not allowed", "todo_id", todo.ID, "project", projectPath)
 			continue
 		}
 
 		// 3. 作者白名單過濾
 		if !s.isAllowed(mr.Author, allowedAuthors) {
-			fmt.Printf("[Orchestrator] Todo %d MR %d author '%s': Skip (not in allowed authors)\n", todo.ID, mr.IID, mr.Author)
+			slog.Debug("Skipping Todo: author not allowed", "todo_id", todo.ID, "mr_iid", mr.IID, "author", mr.Author)
 			continue
 		}
 
 		// 4. 檢查 Worker 是否忙碌
 		if s.workerManager != nil && s.isReviewerBusy() {
-			fmt.Printf("[Orchestrator] Reviewer is busy, postponing MR %d...\n", mr.IID)
+			slog.Info("Reviewer is busy, postponing MR", "mr_iid", mr.IID)
 			continue
 		}
 
 		// 5. 尋找本地工作區
 		localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
 		if err != nil {
-			fmt.Printf("[Orchestrator] Error locating local workspace for %s: %v\n", projectPath, err)
+			slog.Error("Error locating local workspace", "project", projectPath, "error", err)
 			continue
 		}
 
@@ -91,7 +92,7 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 			// 成功指派後標記為已處理
 			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
 		} else {
-			fmt.Printf("[Orchestrator] Mock mode: Would assign MR %d to workspace %s\n", mr.IID, localPath)
+			slog.Info("Mock mode: task assignment", "mr_iid", mr.IID, "workspace", localPath)
 		}
 	}
 
@@ -124,7 +125,7 @@ func (s *OrchestratorService) assignToReviewer(mr MergeRequest, localPath string
 	for _, w := range s.workerManager.Workers {
 		if w.Config.ID == "reviewer" {
 			if w.Config.Workspace != localPath {
-				fmt.Printf("[Orchestrator] Switching reviewer workspace to %s\n", localPath)
+				slog.Info("Switching reviewer workspace", "from", w.Config.Workspace, "to", localPath)
 				w.Stop()
 				w.Config.Workspace = localPath
 				w.Start()
@@ -132,6 +133,7 @@ func (s *OrchestratorService) assignToReviewer(mr MergeRequest, localPath string
 			}
 			instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
 			w.SendInput(instruction)
+			slog.Info("Assigned task to reviewer", "mr_iid", mr.IID)
 		}
 	}
 }

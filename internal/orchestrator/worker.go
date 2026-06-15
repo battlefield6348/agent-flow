@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func (w *Worker) isPromptReady(screen string) bool {
 
 func (w *Worker) runProcess() {
 	sessionID := w.Config.ID
-	fmt.Printf("[%s] Engine starting via Terminal adapter...\n", sessionID)
+	slog.Info("Worker engine starting", "worker_id", sessionID)
 
 	var additionalArgs []string
 	homeDir, err := os.UserHomeDir()
@@ -158,29 +159,29 @@ func (w *Worker) runProcess() {
 	}
 
 	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, os.Environ()); err != nil {
-		fmt.Printf("[%s] CRITICAL: Failed to start terminal: %v\n", sessionID, err)
+		slog.Error("Failed to start terminal", "worker_id", sessionID, "error", err)
 		return
 	}
 
-	fmt.Printf("[%s] Waiting for CLI initialization...\n", sessionID)
+	slog.Debug("Waiting for CLI initialization", "worker_id", sessionID)
 	ready := false
 	for i := 0; i < 45; i++ {
 		time.Sleep(2 * time.Second)
 		screen, _ := w.Terminal.CapturePane(sessionID)
 		if w.isPromptReady(screen) {
-			fmt.Printf("[%s] CLI is READY.\n", sessionID)
+			slog.Info("Worker CLI is READY", "worker_id", sessionID)
 			ready = true
 			break
 		}
 	}
 
 	if !ready {
-		fmt.Printf("[%s] WARNING: Ready pattern not detected, proceeding anyway...\n", sessionID)
+		slog.Warn("Ready pattern not detected, proceeding anyway", "worker_id", sessionID)
 	}
 
 	if ready && len(w.Config.Skills) > 0 {
 		for _, skill := range w.Config.Skills {
-			fmt.Printf("[%s] Injecting skill with standby prompt: %s\n", sessionID, skill)
+			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
 			skillCmd := fmt.Sprintf("/superpowers:%s 請待命，等候我給予你具體的 Merge Request 評審任務。", skill)
 			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
 
@@ -213,9 +214,9 @@ func (w *Worker) runProcess() {
 		time.Sleep(10 * time.Second)
 		if !w.IsRunning() {
 			screen, _ := w.Terminal.CapturePane(sessionID)
-			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, screen)
+			slog.Error("Worker session DIED", "worker_id", sessionID, "last_screen", screen)
 
-			fmt.Printf("[%s] Session exited. Cleaning up...\n", sessionID)
+			slog.Info("Cleaning up died session", "worker_id", sessionID)
 			close(stopInput)
 			break
 		}
@@ -233,7 +234,7 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	w.setBusy(true)
 	defer w.setBusy(false)
 
-	fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
+	slog.Info("Forwarding input to worker", "worker_id", sessionID, "input", input)
 
 	// 等待 AI 進入就緒狀態
 	for i := 0; i < 45; i++ {
@@ -264,7 +265,7 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	for poll := 0; poll < maxPolls; poll++ {
 		time.Sleep(1 * time.Second)
 		if w.Terminal.IsPaneDead(sessionID) {
-			fmt.Printf("[%s] Detected pane dead during polling.\n", sessionID)
+			slog.Warn("Detected pane dead during polling", "worker_id", sessionID)
 			break
 		}
 		currScreen, _ := w.Terminal.CapturePane(sessionID)
@@ -289,7 +290,7 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	// 抓取執行完畢後的完整歷史
 	linesAfter, err := w.Terminal.CaptureHistory(sessionID)
 	if err != nil {
-		fmt.Printf("[%s] Error getting history after: %v\n", sessionID, err)
+		slog.Error("Error getting terminal history", "worker_id", sessionID, "error", err)
 		return
 	}
 
@@ -340,9 +341,9 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		_ = os.MkdirAll(w.LogDir, 0755)
 		answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
 		if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
-			fmt.Printf("[%s] Error writing answer file: %v\n", sessionID, err)
+			slog.Error("Error writing answer file", "worker_id", sessionID, "error", err)
 		} else {
-			fmt.Printf("[%s] Wrote answer to file (%d bytes): %s\n", sessionID, len(fullText), fullText)
+			slog.Info("Wrote answer to file", "worker_id", sessionID, "bytes", len(fullText))
 		}
 
 		if w.outputCallback != nil {
@@ -357,7 +358,7 @@ func (w *Worker) handleInput(input string, sessionID string) {
 func (w *Worker) Stop() {
 	close(w.stopCh)
 	sessionID := w.Config.ID
-	fmt.Printf("Killing tmux session for %s...\n", sessionID)
+	slog.Info("Stopping worker terminal session", "worker_id", sessionID)
 	_ = w.Terminal.Stop(sessionID)
 }
 

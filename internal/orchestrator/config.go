@@ -41,5 +41,30 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	config.applyDefaults()
 	return &config, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Logs.Path == "" {
+		c.Logs.Path = "./logs"
+	}
+	if c.Scheduler.IntervalSeconds <= 0 {
+		c.Scheduler.IntervalSeconds = 60
+	}
+	if c.Scheduler.GitLabURL == "" {
+		c.Scheduler.GitLabURL = "https://git.efaipd.com"
+	}
+}
+
+func (c *Config) Validate() error {
+	if len(c.Collaborators) == 0 {
+		return os.ErrInvalid // 或者自定義錯誤：至少需要一個協作者
+	}
+	for _, col := range c.Collaborators {
+		if col.ID == "" || col.Cmd == "" {
+			return os.ErrInvalid // 協作者 ID 與指令為必填
+		}
+	}
+	return nil
 }

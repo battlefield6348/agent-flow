@@ -2,7 +2,7 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -24,7 +24,7 @@ func NewScheduler(service *OrchestratorService, interval time.Duration, allowedP
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-	fmt.Printf("[Scheduler] Starting background loop (Interval: %v)...\n", s.interval)
+	slog.Info("Starting background scheduler loop", "interval", s.interval)
 	
 	// 初始等待，確保 Worker 有時間初始化
 	time.Sleep(15 * time.Second)
@@ -35,14 +35,14 @@ func (s *Scheduler) Start(ctx context.Context) {
 	for {
 		err := s.service.ScanAndAssign(ctx, s.allowedProjects, s.allowedMRAuthors)
 		if err != nil {
-			fmt.Printf("[Scheduler] Error during scan: %v\n", err)
+			slog.Error("Error during GitLab scan", "error", err)
 		}
 
 		select {
 		case <-ticker.C:
 			continue
 		case <-ctx.Done():
-			fmt.Println("[Scheduler] Stopping...")
+			slog.Info("Stopping background scheduler")
 			return
 		}
 	}

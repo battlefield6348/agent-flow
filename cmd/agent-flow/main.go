@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,19 +14,26 @@ import (
 )
 
 func main() {
+	// 初始化結構化日誌 (預設輸出到 Stdout)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
+
 	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
 	flag.Parse()
 
 	cfg, err := orchestrator.LoadConfig(*configPath)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
+		slog.Error("Failed to load config", "error", err, "path", *configPath)
+		os.Exit(1)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		slog.Error("Config validation failed", "error", err)
 		os.Exit(1)
 	}
 
 	logDir := cfg.Logs.Path
-	if logDir == "" {
-		logDir = "./logs"
-	}
+	// LoadConfig 內已處理預設值，這裡可直接使用
 
 	// 1. 初始化基礎設施 (Infrastructure)
 	token := getGitLabToken()
@@ -43,14 +51,11 @@ func main() {
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
 
 	// 3. 啟動 Worker
-	fmt.Println("Starting local Workers in tmux...")
+	slog.Info("Starting local Workers in tmux...")
 	workerManager.StartAll()
 
 	// 4. 啟動排程器 (Scheduler)
 	interval := time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 60 * time.Second
-	}
 	
 	scheduler := orchestrator.NewScheduler(service, interval, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors)
 	
@@ -59,13 +64,12 @@ func main() {
 
 	// 偵測 GitLab 使用者名稱並輸出
 	if username, err := gitlabRepo.GetUsername(ctx); err == nil {
-		fmt.Printf("[Scheduler] Detected username from token: %s\n", username)
+		slog.Info("Detected GitLab user", "username", username)
 	}
 
 	go scheduler.Start(ctx)
 
-	fmt.Println("Local Review Monitor Mode is ACTIVE.")
-	fmt.Println("Waiting for GitLab review targets...")
+	slog.Info("Local Review Monitor Mode is ACTIVE. Waiting for GitLab review targets...")
 
 	// 5. 輸出監控邏輯 (CLI Delivery)
 	monitorAnswers(logDir)

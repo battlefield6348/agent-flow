@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +15,7 @@ func NewTmuxTerminal() *TmuxTerminal {
 }
 
 func (t *TmuxTerminal) Start(ctx context.Context, sessionID string, workspace string, cmdStr string, env []string) error {
+	slog.Debug("Terminal Start", "session_id", sessionID, "workspace", workspace, "cmd", cmdStr)
 	// 先殺掉舊的 session
 	_ = t.Stop(sessionID)
 
@@ -39,6 +41,7 @@ func (t *TmuxTerminal) Stop(sessionID string) error {
 }
 
 func (t *TmuxTerminal) SendKeys(sessionID string, keys string, enter bool) error {
+	slog.Debug("Terminal SendKeys", "session_id", sessionID, "keys", keys, "enter", enter)
 	err := exec.Command("tmux", "send-keys", "-t", sessionID, "-l", keys).Run()
 	if err != nil {
 		return err
