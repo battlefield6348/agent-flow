@@ -1,0 +1,49 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// Scheduler 負責管理定期執行的排程任務
+type Scheduler struct {
+	service          *OrchestratorService
+	interval         time.Duration
+	allowedProjects  []string
+	allowedMRAuthors []string
+}
+
+func NewScheduler(service *OrchestratorService, interval time.Duration, allowedProjects, allowedAuthors []string) *Scheduler {
+	return &Scheduler{
+		service:          service,
+		interval:         interval,
+		allowedProjects:  allowedProjects,
+		allowedMRAuthors: allowedAuthors,
+	}
+}
+
+func (s *Scheduler) Start(ctx context.Context) {
+	fmt.Printf("[Scheduler] Starting background loop (Interval: %v)...\n", s.interval)
+	
+	// 初始等待，確保 Worker 有時間初始化
+	time.Sleep(15 * time.Second)
+
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		err := s.service.ScanAndAssign(ctx, s.allowedProjects, s.allowedMRAuthors)
+		if err != nil {
+			fmt.Printf("[Scheduler] Error during scan: %v\n", err)
+		}
+
+		select {
+		case <-ticker.C:
+			continue
+		case <-ctx.Done():
+			fmt.Println("[Scheduler] Stopping...")
+			return
+		}
+	}
+}
