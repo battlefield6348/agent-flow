@@ -1,11 +1,10 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 type Worker struct {
 	Config         CollaboratorConfig
 	LogDir         string
+	Terminal       Terminal
 	stopCh         chan struct{}
 	inputCh        chan string
 	outputCallback func(string)
@@ -42,28 +42,19 @@ func (w *Worker) SetOutputCallback(cb func(string)) {
 }
 
 func (w *Worker) IsRunning() bool {
-	checkCmd := exec.Command("tmux", "has-session", "-t", w.Config.ID)
-	if err := checkCmd.Run(); err != nil {
+	if !w.Terminal.HasSession(w.Config.ID) {
 		return false
 	}
-	return !w.isPaneDead(w.Config.ID)
+	return !w.Terminal.IsPaneDead(w.Config.ID)
 }
 
-func (w *Worker) isPaneDead(sessionID string) bool {
-	cmd := exec.Command("tmux", "display-message", "-p", "-F", "#{pane_dead}", "-t", sessionID)
-	out, err := cmd.Output()
-	if err != nil {
-		return true
-	}
-	return strings.TrimSpace(string(out)) == "1"
-}
-
-func NewWorker(cfg CollaboratorConfig, logDir string) *Worker {
+func NewWorker(cfg CollaboratorConfig, logDir string, terminal Terminal) *Worker {
 	return &Worker{
-		Config:  cfg,
-		LogDir:  logDir,
-		stopCh:  make(chan struct{}),
-		inputCh: make(chan string, 10),
+		Config:   cfg,
+		LogDir:   logDir,
+		Terminal: terminal,
+		stopCh:   make(chan struct{}),
+		inputCh:  make(chan string, 10),
 	}
 }
 
@@ -142,32 +133,9 @@ func (w *Worker) isPromptReady(screen string) bool {
 	return false
 }
 
-func (w *Worker) getHistoryLines(sessionID string) ([]string, error) {
-	cmd := exec.Command("tmux", "capture-pane", "-S", "-", "-J", "-p", "-t", sessionID)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	rawLines := strings.Split(string(out), "\n")
-
-	// 去除 tmux 視窗底部填充的空白行，以取得精確的實際內容邊界
-	end := len(rawLines)
-	for end > 0 && strings.TrimSpace(rawLines[end-1]) == "" {
-		end--
-	}
-
-	var lines []string
-	for i := 0; i < end; i++ {
-		lines = append(lines, rawLines[i])
-	}
-	return lines, nil
-}
-
 func (w *Worker) runProcess() {
 	sessionID := w.Config.ID
-	_ = exec.Command("tmux", "kill-session", "-t", sessionID).Run()
-
-	fmt.Printf("[%s] Engine started in tmux (PTY) mode.\n", sessionID)
+	fmt.Printf("[%s] Engine starting via Terminal adapter...\n", sessionID)
 
 	var additionalArgs []string
 	homeDir, err := os.UserHomeDir()
@@ -189,29 +157,17 @@ func (w *Worker) runProcess() {
 		fullCmd = w.Config.Cmd
 	}
 
-	var startCmd *exec.Cmd
-	if w.Config.Workspace != "" {
-		// 確保指定的工作目錄存在，避免 tmux 啟動失敗
-		_ = os.MkdirAll(w.Config.Workspace, 0755)
-		startCmd = exec.Command("tmux", "new-session", "-d", "-s", sessionID, "-c", w.Config.Workspace, "sh", "-c", fullCmd)
-	} else {
-		startCmd = exec.Command("tmux", "new-session", "-d", "-s", sessionID, "sh", "-c", fullCmd)
-	}
-	startCmd.Env = os.Environ()
-
-	if err := startCmd.Run(); err != nil {
-		fmt.Printf("[%s] CRITICAL: Failed to run tmux start: %v\n", sessionID, err)
+	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, os.Environ()); err != nil {
+		fmt.Printf("[%s] CRITICAL: Failed to start terminal: %v\n", sessionID, err)
 		return
 	}
-	_ = exec.Command("tmux", "set-option", "-t", sessionID, "remain-on-exit", "on").Run()
 
 	fmt.Printf("[%s] Waiting for CLI initialization...\n", sessionID)
 	ready := false
 	for i := 0; i < 45; i++ {
 		time.Sleep(2 * time.Second)
-		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-		out, _ := checkCmd.Output()
-		if w.isPromptReady(string(out)) {
+		screen, _ := w.Terminal.CapturePane(sessionID)
+		if w.isPromptReady(screen) {
 			fmt.Printf("[%s] CLI is READY.\n", sessionID)
 			ready = true
 			break
@@ -225,18 +181,13 @@ func (w *Worker) runProcess() {
 	if ready && len(w.Config.Skills) > 0 {
 		for _, skill := range w.Config.Skills {
 			fmt.Printf("[%s] Injecting skill with standby prompt: %s\n", sessionID, skill)
-			// 將待命指令直接附加於 /superpowers 技能加載命令後發送，防止 AI 載入技能後直接自主掃描
 			skillCmd := fmt.Sprintf("/superpowers:%s 請待命，等候我給予你具體的 Merge Request 評審任務。", skill)
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", skillCmd).Run()
-			time.Sleep(500 * time.Millisecond)
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
 
-			// 由於技能加載與指令處理需要時間，我們主動等待其完成以避免干擾後續輸入
 			time.Sleep(5 * time.Second)
 			for i := 0; i < 45; i++ {
-				checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-				out, _ := checkCmd.Output()
-				if w.isPromptReady(string(out)) {
+				screen, _ := w.Terminal.CapturePane(sessionID)
+				if w.isPromptReady(screen) {
 					break
 				}
 				time.Sleep(2 * time.Second)
@@ -261,9 +212,8 @@ func (w *Worker) runProcess() {
 	for {
 		time.Sleep(10 * time.Second)
 		if !w.IsRunning() {
-			captureCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-			lastScreen, _ := captureCmd.Output()
-			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, string(lastScreen))
+			screen, _ := w.Terminal.CapturePane(sessionID)
+			fmt.Printf("[%s] SESSION DIED! Last screen output:\n%s\n", sessionID, screen)
 
 			fmt.Printf("[%s] Session exited. Cleaning up...\n", sessionID)
 			close(stopInput)
@@ -285,48 +235,42 @@ func (w *Worker) handleInput(input string, sessionID string) {
 
 	fmt.Printf("[%s] Forwarding input: %s\n", sessionID, input)
 
-	// 等待 AI 進入就緒狀態，避免在 AI 還在前一次處理中就發送新輸入
+	// 等待 AI 進入就緒狀態
 	for i := 0; i < 45; i++ {
-		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-		out, _ := checkCmd.Output()
-		if w.isPromptReady(string(out)) {
+		screen, _ := w.Terminal.CapturePane(sessionID)
+		if w.isPromptReady(screen) {
 			break
 		}
 		time.Sleep(2 * time.Second)
 	}
 
-	// 記錄發送問題前的終端歷史，以便後續比對出這次問題的回答內容
-	linesBefore, err := w.getHistoryLines(sessionID)
+	// 記錄發送問題前的終端歷史
+	linesBefore, err := w.Terminal.CaptureHistory(sessionID)
 	var N int
 	if err == nil {
 		N = len(linesBefore)
 	}
 
-	// 將輸入傳送到 tmux 視窗內，並模擬按下 Enter 鍵以執行
-	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "-l", input).Run()
-	time.Sleep(500 * time.Millisecond)
-	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
-	_ = exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
+	// 將輸入傳送到終端
+	_ = w.Terminal.SendKeys(sessionID, input, true)
+	_ = w.Terminal.SendKeys(sessionID, "", true) // 多按一個 Enter 確保觸發
 
-	// 稍作延遲，確保指令已經開始在 tmux 中執行，避免馬上判定為 READY
 	time.Sleep(2 * time.Second)
 
-	// 持續偵測 tmux 畫面內容不再變化，且重新出現 Prompt 代表執行完畢
+	// 持續偵測內容變化，等待提示符重新出現
 	maxPolls := 3600
 	var lastScreen string
 	sameCount := 0
 	for poll := 0; poll < maxPolls; poll++ {
 		time.Sleep(1 * time.Second)
-		if w.isPaneDead(sessionID) {
-			fmt.Printf("[%s] Detected pane dead during polling, extracting last output.\n", sessionID)
+		if w.Terminal.IsPaneDead(sessionID) {
+			fmt.Printf("[%s] Detected pane dead during polling.\n", sessionID)
 			break
 		}
-		checkCmd := exec.Command("tmux", "capture-pane", "-pt", sessionID)
-		out, _ := checkCmd.Output()
-		currScreen := string(out)
+		currScreen, _ := w.Terminal.CapturePane(sessionID)
 
-		currClean := cleanANSI(currScreen)
-		lastClean := cleanANSI(lastScreen)
+		currClean := CleanLine(currScreen)
+		lastClean := CleanLine(lastScreen)
 
 		if currClean == lastClean && currClean != "" {
 			sameCount++
@@ -342,8 +286,8 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		}
 	}
 
-	// 抓取執行完畢後的完整歷史，並切分出新增的文字行
-	linesAfter, err := w.getHistoryLines(sessionID)
+	// 抓取執行完畢後的完整歷史
+	linesAfter, err := w.Terminal.CaptureHistory(sessionID)
 	if err != nil {
 		fmt.Printf("[%s] Error getting history after: %v\n", sessionID, err)
 		return
@@ -356,15 +300,14 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		newLines = linesAfter
 	}
 
-	// 過濾與清理每一行，移除 ANSI 控制字元與回顯問題等雜訊
+	// 過濾與清理每一行
 	var cleanLines []string
 	for _, line := range newLines {
-		cleaned := cleanANSI(line)
-		if w.shouldIgnore(cleaned) {
+		cleaned := CleanLine(line)
+		if ShouldIgnore(cleaned) {
 			continue
 		}
 
-		// 移除提示符並比對是否為輸入回顯，避免重複將問題傳回
 		trimmedLine := strings.TrimSpace(cleaned)
 		for _, p := range []string{">", "›", "»", "🤖"} {
 			trimmedLine = strings.TrimPrefix(trimmedLine, p)
@@ -381,19 +324,12 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		cleanLines = append(cleanLines, cleaned)
 	}
 
-	// 拼接成完整的回答
+	// 拼接並進一步清理完整回覆
 	fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
-	fullText = thoughtRegex.ReplaceAllString(fullText, "")
-	fullText = strings.TrimSpace(fullText)
+	fullText = CleanBlock(fullText)
 
 	if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
-		parts := dividerRegex.Split(fullText, -1)
-		if len(parts) > 0 {
-			finalText := strings.TrimSpace(parts[len(parts)-1])
-			finalText = strings.TrimPrefix(finalText, "•")
-			finalText = strings.TrimPrefix(finalText, "*")
-			fullText = strings.TrimSpace(finalText)
-		}
+		fullText = ParseFinalResponse(fullText)
 	}
 
 	w.muLast.Lock()
@@ -401,7 +337,6 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	w.muLast.Unlock()
 
 	if fullText != "" && fullText != strings.TrimSpace(last) {
-		// 確保記錄目錄存在，以便寫入答案檔案
 		_ = os.MkdirAll(w.LogDir, 0755)
 		answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
 		if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
@@ -419,94 +354,21 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	}
 }
 
-// shouldIgnore 判定是否為無意義的系統噪音或 TUI 介面元素
-func (w *Worker) shouldIgnore(text string) bool {
-	t := strings.ToLower(text)
-	// 濾掉 TUI 繪圖、狀態列關鍵字與動態加載符號
-	noise := []string{
-		"▀▀▀", "▄▄▄", "────", "───",
-		"workspace (/", "branch", "sandbox", "auto (gemini",
-		"type your message", "shift+tab", "? for shortcuts",
-		"thinking...", "queued (press",
-		"yolo mode is enabled",
-		"using filekeychain fallback",
-		"loaded cached credentials",
-		"org.freedesktop.secrets",
-		"working...", "⠏", "⠼", "⠴", "⠦", "⠧", // 加載動畫符號
-		"press ctrl+o", "show more lines", // 終端狀態列提示
-		"yolo ctrl+y", "mcp servers", "skills", // 狀態列關鍵字
-		"quota", "used", "gemini 3", "gemini 1.5", // 狀態列剩餘額度等資訊
-		"ctrl+c to stop", "ctrl+u to undo",
-		"...", "✦",
-	}
-	for _, n := range noise {
-		if strings.Contains(t, n) {
-			return true
-		}
-	}
-	// 濾掉過短或只有符號的訊息
-	trimmed := strings.TrimSpace(text)
-	if len(trimmed) < 2 {
-		return true
-	}
-	return false
-}
-
-// 強化版 ANSI 清理正則
-var ansiRegex = regexp.MustCompile(`[\x1B\x9B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))`)
-
-// 匹配不可見的控制字元與特定 Unicode 雜訊
-var controlCharsRegex = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`)
-
-// 用於過濾 AI 回覆中的 CoT (Chain of Thought) 思考過程，僅回傳最終答案
-var thoughtRegex = regexp.MustCompile(`(?s)<thought>.*?</thought>`)
-
-// 用於識別並分割 CLI TUI 輸出中的步驟分割線，以提取最終的對話答案
-var dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\x{2500}]{5,}[ \t]*$`)
-
-func cleanANSI(text string) string {
-	// 1. 移除標準 ANSI 逃逸序列
-	text = ansiRegex.ReplaceAllString(text, "")
-
-	// 2. 處理 \r (Carriage Return): 模擬終端覆寫，只保留最後一部分
-	if strings.Contains(text, "\r") {
-		parts := strings.Split(text, "\r")
-		for i := len(parts) - 1; i >= 0; i-- {
-			p := strings.TrimSpace(parts[i])
-			if p != "" {
-				text = parts[i]
-				break
-			}
-		}
-	}
-
-	// 3. 移除不可見的 ASCII 控制字元 (除了 \n)
-	text = controlCharsRegex.ReplaceAllString(text, "")
-	// 4. 移除特定的 Unicode 盲文符號 (常見於加載動畫)
-	text = strings.Map(func(r rune) rune {
-		if r >= '\u2800' && r <= '\u28FF' { // Braille Patterns
-			return -1
-		}
-		return r
-	}, text)
-	return strings.TrimSpace(text)
-}
-
 func (w *Worker) Stop() {
 	close(w.stopCh)
 	sessionID := w.Config.ID
 	fmt.Printf("Killing tmux session for %s...\n", sessionID)
-	_ = exec.Command("tmux", "kill-session", "-t", sessionID).Run()
+	_ = w.Terminal.Stop(sessionID)
 }
 
 type WorkerManager struct {
 	Workers []*Worker
 }
 
-func NewWorkerManager(configs []CollaboratorConfig, logDir string) *WorkerManager {
+func NewWorkerManager(configs []CollaboratorConfig, logDir string, terminal Terminal) *WorkerManager {
 	var workers []*Worker
 	for _, cfg := range configs {
-		workers = append(workers, NewWorker(cfg, logDir))
+		workers = append(workers, NewWorker(cfg, logDir, terminal))
 	}
 	return &WorkerManager{Workers: workers}
 }

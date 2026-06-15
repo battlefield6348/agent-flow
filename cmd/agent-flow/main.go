@@ -36,7 +36,8 @@ func main() {
 
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, token)
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
-	workerManager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir)
+	terminal := orchestrator.NewTmuxTerminal()
+	workerManager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir, terminal)
 
 	// 2. 初始化業務服務 (Use Case)
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
