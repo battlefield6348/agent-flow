@@ -10,15 +10,15 @@ import (
 
 // Client 是對 GitLab API 的封裝
 type Client struct {
-	baseURL string
-	token   string
+	baseURL    string
+	token      string
 	httpClient *http.Client
 }
 
 func NewClient(baseURL, token string) *Client {
 	return &Client{
-		baseURL: baseURL,
-		token:   token,
+		baseURL:    baseURL,
+		token:      token,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }

@@ -33,36 +33,26 @@ func main() {
 	}
 
 	logDir := cfg.Logs.Path
-	// LoadConfig 內已處理預設值，這裡可直接使用
 
-	// 1. 初始化基礎設施 (Infrastructure)
 	token := getGitLabToken()
 	gitlabURL := cfg.Scheduler.GitLabURL
-	if gitlabURL == "" {
-		gitlabURL = "https://git.efaipd.com"
-	}
 
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, token)
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
 	terminal := orchestrator.NewTmuxTerminal()
 	workerManager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir, terminal)
 
-	// 2. 初始化業務服務 (Use Case)
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
 
-	// 3. 啟動 Worker
 	slog.Info("Starting local Workers in tmux...")
 	workerManager.StartAll()
 
-	// 4. 啟動排程器 (Scheduler)
 	interval := time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second
-	
 	scheduler := orchestrator.NewScheduler(service, interval, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors)
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 偵測 GitLab 使用者名稱並輸出
 	if username, err := gitlabRepo.GetUsername(ctx); err == nil {
 		slog.Info("Detected GitLab user", "username", username)
 	}
@@ -71,7 +61,6 @@ func main() {
 
 	slog.Info("Local Review Monitor Mode is ACTIVE. Waiting for GitLab review targets...")
 
-	// 5. 輸出監控邏輯 (CLI Delivery)
 	monitorAnswers(logDir)
 }
 

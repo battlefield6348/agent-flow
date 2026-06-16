@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"errors"
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -59,11 +61,14 @@ func (c *Config) applyDefaults() {
 
 func (c *Config) Validate() error {
 	if len(c.Collaborators) == 0 {
-		return os.ErrInvalid // 或者自定義錯誤：至少需要一個協作者
+		return errors.New("at least one collaborator must be configured")
 	}
 	for _, col := range c.Collaborators {
-		if col.ID == "" || col.Cmd == "" {
-			return os.ErrInvalid // 協作者 ID 與指令為必填
+		if col.ID == "" {
+			return errors.New("collaborator ID cannot be empty")
+		}
+		if col.Cmd == "" {
+			return fmt.Errorf("collaborator %s command (cmd) cannot be empty", col.ID)
 		}
 	}
 	return nil
