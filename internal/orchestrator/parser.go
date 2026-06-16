@@ -19,12 +19,11 @@ var (
 	dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\x{2500}]{5,}[ \t]*$`)
 )
 
-// CleanLine 處理單行文字的清理 (ANSI, 控制字元, 盲文)
+// CleanLine 處理單行文字的清理，確保輸出不含 ANSI 逃逸序列、不可見字元及動態加載雜訊
 func CleanLine(text string) string {
-	// 1. 移除標準 ANSI 逃逸序列
 	text = ansiRegex.ReplaceAllString(text, "")
 
-	// 2. 處理 \r (Carriage Return): 模擬終端覆寫，只保留最後一部分
+	// 模擬終端覆寫行為，當存在 Carriage Return 時僅保留最後一段有效內容
 	if strings.Contains(text, "\r") {
 		parts := strings.Split(text, "\r")
 		for i := len(parts) - 1; i >= 0; i-- {
@@ -36,12 +35,11 @@ func CleanLine(text string) string {
 		}
 	}
 
-	// 3. 移除不可見的 ASCII 控制字元 (除了 \n)
 	text = controlCharsRegex.ReplaceAllString(text, "")
 
-	// 4. 移除特定的 Unicode 盲文符號 (常見於加載動畫)
+	// 移除盲文符號，這些符號通常用於 CLI 的動態加載動畫，在純文字日誌中無意義
 	text = strings.Map(func(r rune) rune {
-		if r >= '\u2800' && r <= '\u28FF' { // Braille Patterns
+		if r >= '\u2800' && r <= '\u28FF' {
 			return -1
 		}
 		return r

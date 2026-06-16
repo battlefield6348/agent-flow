@@ -54,42 +54,41 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 		mr := todo.MergeRequest
 		projectPath := todo.Project
 
-		// 1. 狀態過濾
+		// 僅處理開啟狀態的 Merge Request，避免對已合併或關閉的任務進行無謂的操作
 		if strings.ToLower(mr.State) != "opened" {
 			slog.Info("Cleaning up non-opened MR Todo", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "state", mr.State)
 			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
 			continue
 		}
 
-		// 2. 專案白名單過濾
+		// 根據專案白名單過濾，確保僅在授權的專案範圍內運作
 		if !s.isAllowed(projectPath, allowedProjects) {
 			slog.Debug("Skipping Todo: project not allowed", "todo_id", todo.ID, "project", projectPath)
 			continue
 		}
 
-		// 3. 作者白名單過濾
+		// 根據作者白名單過濾，用於限定特定開發者的 MR 評審任務
 		if !s.isAllowed(mr.Author, allowedAuthors) {
 			slog.Debug("Skipping Todo: author not allowed", "todo_id", todo.ID, "mr_iid", mr.IID, "author", mr.Author)
 			continue
 		}
 
-		// 4. 檢查 Worker 是否忙碌
+		// 檢查 Worker 忙碌狀態以實現背壓控流，避免資源競爭或重複指派
 		if s.workerManager != nil && s.isReviewerBusy() {
 			slog.Info("Reviewer is busy, postponing MR", "mr_iid", mr.IID)
 			continue
 		}
 
-		// 5. 尋找本地工作區
+		// 定位本地工作區路徑，以便 Worker 能在正確的環境中執行靜態分析或測試
 		localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
 		if err != nil {
 			slog.Error("Error locating local workspace", "project", projectPath, "error", err)
 			continue
 		}
 
-		// 6. 分派任務給 Worker
+		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
 		if s.workerManager != nil {
 			s.assignToReviewer(mr, localPath)
-			// 成功指派後標記為已處理
 			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
 		} else {
 			slog.Info("Mock mode: task assignment", "mr_iid", mr.IID, "workspace", localPath)
