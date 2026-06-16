@@ -67,26 +67,26 @@ func ParseFinalResponse(text string) string {
 	return text
 }
 
+var noiseList = []string{
+	"▀▀▀", "▄▄▄", "────", "───",
+	"workspace (/", "branch", "sandbox", "auto (gemini",
+	"type your message", "shift+tab", "? for shortcuts",
+	"thinking...", "queued (press",
+	"yolo mode is enabled",
+	"using filekeychain fallback",
+	"loaded cached credentials",
+	"org.freedesktop.secrets",
+	"working...", "⠏", "⠼", "⠴", "⠦", "⠧", // 加載動畫符號
+	"press ctrl+o", "show more lines", // 終端狀態列提示
+	"yolo ctrl+y", "mcp servers", "skills", // 狀態列關鍵字
+	"quota", "used", "gemini 3", "gemini 1.5", // 狀態列剩餘額度等資訊
+	"ctrl+c to stop", "ctrl+u to undo",
+	"...", "✦",
+}
+
 func ShouldIgnore(text string) bool {
 	t := strings.ToLower(text)
-	// 濾掉 TUI 繪圖、狀態列關鍵字與動態加載符號
-	noise := []string{
-		"▀▀▀", "▄▄▄", "────", "───",
-		"workspace (/", "branch", "sandbox", "auto (gemini",
-		"type your message", "shift+tab", "? for shortcuts",
-		"thinking...", "queued (press",
-		"yolo mode is enabled",
-		"using filekeychain fallback",
-		"loaded cached credentials",
-		"org.freedesktop.secrets",
-		"working...", "⠏", "⠼", "⠴", "⠦", "⠧", // 加載動畫符號
-		"press ctrl+o", "show more lines", // 終端狀態列提示
-		"yolo ctrl+y", "mcp servers", "skills", // 狀態列關鍵字
-		"quota", "used", "gemini 3", "gemini 1.5", // 狀態列剩餘額度等資訊
-		"ctrl+c to stop", "ctrl+u to undo",
-		"...", "✦",
-	}
-	for _, n := range noise {
+	for _, n := range noiseList {
 		if strings.Contains(t, n) {
 			return true
 		}
