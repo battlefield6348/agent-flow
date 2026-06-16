@@ -229,65 +229,81 @@ func (w *Worker) runProcess() {
 	}
 }
 
-// 處理來自通道的評審或開發指令，並追蹤其忙碌狀態與結果輸出
+// handleInput 處理來自通道的指令，並追蹤其忙碌狀態與結果輸出
 func (w *Worker) handleInput(input string, sessionID string) {
 	w.setBusy(true)
 	defer w.setBusy(false)
 
 	slog.Info("Forwarding input to worker", "worker_id", sessionID, "input", input)
 
-	// 等待 AI 進入就緒狀態
-	for i := 0; i < 45; i++ {
-		screen, _ := w.Terminal.CapturePane(sessionID)
+	if !w.waitForReady(45) {
+		slog.Warn("Worker not ready for input, proceeding anyway", "worker_id", sessionID)
+	}
+
+	// 記錄發送指令前的歷史行數，以便後續提取增量回覆
+	nBefore := w.getHistoryLineCount(sessionID)
+
+	_ = w.Terminal.SendKeys(sessionID, input, true)
+	_ = w.Terminal.SendKeys(sessionID, "", true) // 額外的 Enter 確保 CLI 觸發執行
+
+	// 等待執行完成並提取輸出
+	if !w.pollUntilReady(3600) {
+		slog.Warn("Polling timeout or interrupted", "worker_id", sessionID)
+	}
+
+	w.processAndSaveOutput(sessionID, nBefore, input)
+}
+
+// waitForReady 等待終端出現可輸入提示
+func (w *Worker) waitForReady(maxAttempts int) bool {
+	for i := 0; i < maxAttempts; i++ {
+		screen, _ := w.Terminal.CapturePane(w.Config.ID)
 		if w.isPromptReady(screen) {
-			break
+			return true
 		}
 		time.Sleep(2 * time.Second)
 	}
+	return false
+}
 
-	// 記錄發送問題前的終端歷史
-	linesBefore, err := w.Terminal.CaptureHistory(sessionID)
-	var N int
-	if err == nil {
-		N = len(linesBefore)
-	}
-
-	// 將輸入傳送到終端
-	_ = w.Terminal.SendKeys(sessionID, input, true)
-	_ = w.Terminal.SendKeys(sessionID, "", true) // 多按一個 Enter 確保觸發
-
-	time.Sleep(2 * time.Second)
-
-	// 持續偵測內容變化，等待提示符重新出現
-	maxPolls := 3600
+// pollUntilReady 持續偵測內容變化，直到畫面穩定且出現提示符
+func (w *Worker) pollUntilReady(maxSeconds int) bool {
 	var lastScreen string
 	sameCount := 0
-	for poll := 0; poll < maxPolls; poll++ {
+	for poll := 0; poll < maxSeconds; poll++ {
 		time.Sleep(1 * time.Second)
-		if w.Terminal.IsPaneDead(sessionID) {
-			slog.Warn("Detected pane dead during polling", "worker_id", sessionID)
-			break
+		if w.Terminal.IsPaneDead(w.Config.ID) {
+			return false
 		}
-		currScreen, _ := w.Terminal.CapturePane(sessionID)
+		currScreen, _ := w.Terminal.CapturePane(w.Config.ID)
 
-		currClean := CleanLine(currScreen)
-		lastClean := CleanLine(lastScreen)
-
-		if currClean == lastClean && currClean != "" {
+		// 透過清理後的文字比對來判定畫面是否停止更新
+		if CleanLine(currScreen) == CleanLine(lastScreen) && currScreen != "" {
 			sameCount++
 		} else {
 			sameCount = 0
 		}
 		lastScreen = currScreen
 
-		if sameCount >= 2 {
-			if w.isPromptReady(currScreen) {
-				break
-			}
+		// 當畫面連續兩秒無變化且出現提示符時，視為執行結束
+		if sameCount >= 2 && w.isPromptReady(currScreen) {
+			return true
 		}
 	}
+	return false
+}
 
-	// 抓取執行完畢後的完整歷史
+// getHistoryLineCount 取得當前終端歷史的總行數
+func (w *Worker) getHistoryLineCount(sessionID string) int {
+	lines, err := w.Terminal.CaptureHistory(sessionID)
+	if err != nil {
+		return 0
+	}
+	return len(lines)
+}
+
+// processAndSaveOutput 提取增量歷史，進行清理過濾後保存至檔案並觸發回調
+func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInput string) {
 	linesAfter, err := w.Terminal.CaptureHistory(sessionID)
 	if err != nil {
 		slog.Error("Error getting terminal history", "worker_id", sessionID, "error", err)
@@ -295,63 +311,73 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	}
 
 	var newLines []string
-	if len(linesAfter) > N {
-		newLines = linesAfter[N:]
+	if len(linesAfter) > nBefore {
+		newLines = linesAfter[nBefore:]
 	} else {
 		newLines = linesAfter
 	}
 
-	// 過濾與清理每一行
-	var cleanLines []string
-	for _, line := range newLines {
-		cleaned := CleanLine(line)
-		if ShouldIgnore(cleaned) {
-			continue
-		}
-
-		trimmedLine := strings.TrimSpace(cleaned)
-		for _, p := range []string{">", "›", "»", "🤖"} {
-			trimmedLine = strings.TrimPrefix(trimmedLine, p)
-			trimmedLine = strings.TrimSpace(trimmedLine)
-		}
-		if trimmedLine == strings.TrimSpace(input) {
-			continue
-		}
-
-		if trimmedLine == "" {
-			continue
-		}
-
-		cleanLines = append(cleanLines, cleaned)
-	}
-
-	// 拼接並進一步清理完整回覆
-	fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
-	fullText = CleanBlock(fullText)
-
-	if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
-		fullText = ParseFinalResponse(fullText)
+	fullText := w.filterAndJoinLines(newLines, originalInput)
+	if fullText == "" {
+		return
 	}
 
 	w.muLast.Lock()
-	last := w.lastOutput
+	isDuplicate := fullText == strings.TrimSpace(w.lastOutput)
 	w.muLast.Unlock()
 
-	if fullText != "" && fullText != strings.TrimSpace(last) {
-		_ = os.MkdirAll(w.LogDir, 0755)
-		answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
-		if err := os.WriteFile(answerFile, []byte(fullText), 0644); err != nil {
-			slog.Error("Error writing answer file", "worker_id", sessionID, "error", err)
-		} else {
-			slog.Info("Wrote answer to file", "worker_id", sessionID, "bytes", len(fullText))
-		}
-
+	if !isDuplicate {
+		w.saveAnswerToFile(sessionID, fullText)
 		if w.outputCallback != nil {
 			w.outputCallback(fullText)
 		}
 		w.muLast.Lock()
 		w.lastOutput = fullText
 		w.muLast.Unlock()
+	}
+}
+
+// filterAndJoinLines 清理增量行並拼接成最終文本
+func (w *Worker) filterAndJoinLines(lines []string, originalInput string) string {
+	var cleanLines []string
+	inputTrimmed := strings.TrimSpace(originalInput)
+
+	for _, line := range lines {
+		cleaned := CleanLine(line)
+		if ShouldIgnore(cleaned) {
+			continue
+		}
+
+		// 移除常見的提示符前綴
+		trimmedLine := strings.TrimSpace(cleaned)
+		for _, p := range []string{">", "›", "»", "🤖"} {
+			trimmedLine = strings.TrimPrefix(trimmedLine, p)
+			trimmedLine = strings.TrimSpace(trimmedLine)
+		}
+
+		// 過濾掉輸入內容本身，僅保留 AI 回覆
+		if trimmedLine == inputTrimmed || trimmedLine == "" {
+			continue
+		}
+		cleanLines = append(cleanLines, cleaned)
+	}
+
+	fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
+	fullText = CleanBlock(fullText)
+
+	if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
+		fullText = ParseFinalResponse(fullText)
+	}
+	return fullText
+}
+
+func (w *Worker) saveAnswerToFile(sessionID, content string) {
+	_ = os.MkdirAll(w.LogDir, 0755)
+	answerFile := filepath.Join(w.LogDir, fmt.Sprintf("%s_answer.txt", sessionID))
+	if err := os.WriteFile(answerFile, []byte(content), 0644); err != nil {
+		slog.Error("Error writing answer file", "worker_id", sessionID, "error", err)
+	} else {
+		slog.Info("Wrote answer to file", "worker_id", sessionID, "bytes", len(content))
 	}
 }
 
