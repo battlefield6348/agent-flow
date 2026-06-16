@@ -22,6 +22,8 @@ type Worker struct {
 	muLast         sync.Mutex
 	isBusy         bool
 	muBusy         sync.Mutex
+	running        bool
+	muRun          sync.Mutex
 }
 
 // 判定此 Worker 是否正在執行對話任務中
@@ -67,7 +69,14 @@ func (w *Worker) SendInput(text string) {
 }
 
 func (w *Worker) Start() {
+	w.muRun.Lock()
+	defer w.muRun.Unlock()
+	if w.running {
+		slog.Warn("Worker is already running", "worker_id", w.Config.ID)
+		return
+	}
 	w.stopCh = make(chan struct{})
+	w.running = true
 	go w.runLoop()
 }
 
@@ -382,7 +391,14 @@ func (w *Worker) saveAnswerToFile(sessionID, content string) {
 }
 
 func (w *Worker) Stop() {
+	w.muRun.Lock()
+	defer w.muRun.Unlock()
+	if !w.running {
+		slog.Warn("Worker is not running", "worker_id", w.Config.ID)
+		return
+	}
 	close(w.stopCh)
+	w.running = false
 	sessionID := w.Config.ID
 	slog.Info("Stopping worker terminal session", "worker_id", sessionID)
 	_ = w.Terminal.Stop(sessionID)

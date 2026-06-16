@@ -31,7 +31,7 @@ func (t *TmuxTerminal) Start(ctx context.Context, sessionID string, workspace st
 	if err := startCmd.Run(); err != nil {
 		return err
 	}
-	
+
 	_ = exec.Command("tmux", "set-option", "-t", sessionID, "remain-on-exit", "on").Run()
 	return nil
 }

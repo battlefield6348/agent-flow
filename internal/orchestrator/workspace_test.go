@@ -27,7 +27,7 @@ func TestOsWorkspaceRepository_FindLocalPath(t *testing.T) {
 	// 這裡我們難以在測試環境中真正執行 git remote get-url (因為沒有真的 git repo)
 	// 但我們可以先測試基本邏輯。由於目前的實作依賴 exec.Command("git")，
 	// 建議在實作中加入可注入的 Runner 或是針對此測試進行環境適配。
-	
+
 	// 目前先撰寫一個會失敗的測試（因為還沒實作程式碼）
 	repo := NewOsWorkspaceRepository()
 	_, err = repo.FindLocalPath(context.Background(), "namespace/my-project")

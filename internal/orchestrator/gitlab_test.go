@@ -14,7 +14,7 @@ func TestHttpGitLabRepository_FetchPendingTodos(t *testing.T) {
 		if r.URL.Path != "/api/v4/todos" {
 			t.Errorf("Expected path /api/v4/todos, got %s", r.URL.Path)
 		}
-		
+
 		todos := []struct {
 			ID      int `json:"id"`
 			Project struct {

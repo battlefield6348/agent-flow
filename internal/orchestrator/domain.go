@@ -13,9 +13,9 @@ type MergeRequest struct {
 
 // Todo 代表 GitLab 中的待辦事項領域模型
 type Todo struct {
-	ID          int
-	ActionName  string
-	TargetType  string
-	Project     string
+	ID           int
+	ActionName   string
+	TargetType   string
+	Project      string
 	MergeRequest MergeRequest
 }

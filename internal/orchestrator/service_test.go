@@ -36,8 +36,8 @@ func TestOrchestratorService_ScanAndAssign(t *testing.T) {
 				ID:      1,
 				Project: "group/project",
 				MergeRequest: MergeRequest{
-					IID:   101,
-					State: "opened",
+					IID:    101,
+					State:  "opened",
 					WebURL: "http://gitlab.com/mr/101",
 					Author: "author1",
 				},
@@ -47,9 +47,9 @@ func TestOrchestratorService_ScanAndAssign(t *testing.T) {
 	ws := &MockWorkspaceRepository{Path: "/local/path"}
 	// 這裡需要一個 Mock WorkerManager，但因為 WorkerManager 目前較為複雜，
 	// 我們先實作一個簡單的 OrchestratorService 並測試其邏輯流。
-	
+
 	service := NewOrchestratorService(gl, ws, nil)
-	
+
 	// 這裡可以測試 ScanAndAssign 的過濾邏輯等
 	// 由於目前 ScanAndAssign 還沒實作，這是一個紅燈測試。
 	err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})

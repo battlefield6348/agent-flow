@@ -25,7 +25,7 @@ func NewScheduler(service *OrchestratorService, interval time.Duration, allowedP
 
 func (s *Scheduler) Start(ctx context.Context) {
 	slog.Info("Starting background scheduler loop", "interval", s.interval)
-	
+
 	// 初始等待，確保 Worker 有時間初始化
 	time.Sleep(15 * time.Second)
 
