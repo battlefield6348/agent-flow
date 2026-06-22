@@ -148,12 +148,15 @@ func (w *Worker) runProcess() {
 	slog.Info("Worker engine starting", "worker_id", sessionID)
 
 	var additionalArgs []string
+	var superpowersSkills []string
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		for _, skill := range w.Config.Skills {
 			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skill)
 			if _, err := os.Stat(skillPath); err == nil {
+				// 只有在 ~/.gemini/antigravity/skills 下存在的技能才屬於 superpowers
 				additionalArgs = append(additionalArgs, "--add-dir", skillPath)
+				superpowersSkills = append(superpowersSkills, skill)
 			}
 		}
 	}
@@ -188,8 +191,9 @@ func (w *Worker) runProcess() {
 		slog.Warn("Ready pattern not detected, proceeding anyway", "worker_id", sessionID)
 	}
 
-	if ready && len(w.Config.Skills) > 0 {
-		for _, skill := range w.Config.Skills {
+	if ready && len(superpowersSkills) > 0 {
+		for _, skill := range superpowersSkills {
+			// 僅對載入至 superpowers 技能庫的套件進行指令初始化
 			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
 			skillCmd := fmt.Sprintf("/superpowers:%s 請待命，等候我給予你具體的 Merge Request 評審任務。", skill)
 			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
