@@ -34,7 +34,7 @@ func main() {
 
 	logDir := cfg.Logs.Path
 
-	token := getGitLabToken()
+	token := cfg.Collaborators[0].GitLabToken
 	gitlabURL := cfg.Scheduler.GitLabURL
 
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, token)
@@ -67,18 +67,6 @@ func main() {
 	monitorAnswers(logDir)
 }
 
-func getGitLabToken() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	tokenPath := filepath.Join(homeDir, ".gemini/antigravity/gitlab_token")
-	tokenBytes, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(tokenBytes))
-}
 
 func monitorAnswers(logDir string) {
 	ticker := time.NewTicker(1 * time.Second)
