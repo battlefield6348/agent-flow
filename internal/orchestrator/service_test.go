@@ -51,9 +51,9 @@ func TestOrchestratorService_ScanAndAssign(t *testing.T) {
 
 	service := NewOrchestratorService(gl, ws, nil)
 
-	err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
 	if err != nil {
-		t.Fatalf("ScanAndAssign failed: %v", err)
+		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, nil)
 		service.SetCheckCISuccess(false)
 
-		err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -97,7 +97,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, nil)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -114,7 +114,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, nil)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -129,7 +129,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, nil)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssign(context.Background(), []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
