@@ -32,6 +32,7 @@ type CollaboratorConfig struct {
 	OnlyFinalResponse bool     `yaml:"only_final_response"`
 	Workspace         string   `yaml:"workspace"`
 	GitLabToken       string   `yaml:"gitlab_token"`
+	PromptSuffix      string   `yaml:"prompt_suffix"`
 }
 
 func LoadConfig(path string) (*Config, error) {

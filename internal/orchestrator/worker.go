@@ -61,6 +61,22 @@ func NewWorker(cfg CollaboratorConfig, logDir string, terminal Terminal) *Worker
 	}
 }
 
+func (w *Worker) BuildPromptMsg(sessionID string) string {
+	var promptMsg string
+	switch sessionID {
+	case "coder":
+		promptMsg = "請待命，等候我給予你具體的開發與修正任務。"
+	case "reviewer":
+		promptMsg = "請待命，等候我給予你具體的 Merge Request 評審任務。"
+	default:
+		promptMsg = "請待命，等候我給予你具體的任務。"
+	}
+	if w.Config.PromptSuffix != "" {
+		promptMsg += w.Config.PromptSuffix
+	}
+	return promptMsg
+}
+
 func (w *Worker) SendInput(text string) {
 	if w.Config.InputPrefix != "" {
 		text = w.Config.InputPrefix + text
@@ -227,15 +243,7 @@ func (w *Worker) runProcess() {
 		time.Sleep(5 * time.Second)
 		for _, skill := range superpowersSkills {
 			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
-			var promptMsg string
-			switch sessionID {
-			case "coder":
-				promptMsg = "請待命，等候我給予你具體的開發與修正任務。"
-			case "reviewer":
-				promptMsg = "請待命，等候我給予你具體的 Merge Request 評審任務。"
-			default:
-				promptMsg = "請待命，等候我給予你具體的任務。"
-			}
+			promptMsg := w.BuildPromptMsg(sessionID)
 			prefix := "$"
 			if strings.Contains(w.Config.Cmd, "agy") {
 				prefix = "/"

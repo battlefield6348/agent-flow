@@ -78,3 +78,44 @@ func TestWorker_LifecycleSafety(t *testing.T) {
 	}()
 	w.Stop() // 重複關閉
 }
+
+func TestWorker_BuildPromptMsg(t *testing.T) {
+	t.Run("預設無後綴情況", func(t *testing.T) {
+		cfg := CollaboratorConfig{
+			ID:           "reviewer",
+			PromptSuffix: "",
+		}
+		w := &Worker{Config: cfg}
+		msg := w.BuildPromptMsg("reviewer")
+		expected := "請待命，等候我給予你具體的 Merge Request 評審任務。"
+		if msg != expected {
+			t.Errorf("預期為 '%s'，但得到 '%s'", expected, msg)
+		}
+	})
+
+	t.Run("設定後綴情況", func(t *testing.T) {
+		cfg := CollaboratorConfig{
+			ID:           "reviewer",
+			PromptSuffix: " 並且在評審完成後標記 @ryan",
+		}
+		w := &Worker{Config: cfg}
+		msg := w.BuildPromptMsg("reviewer")
+		expected := "請待命，等候我給予你具體的 Merge Request 評審任務。 並且在評審完成後標記 @ryan"
+		if msg != expected {
+			t.Errorf("預期為 '%s'，但得到 '%s'", expected, msg)
+		}
+	})
+
+	t.Run("不同 sessionID 測試", func(t *testing.T) {
+		cfg := CollaboratorConfig{
+			ID:           "coder",
+			PromptSuffix: "，請立刻處理",
+		}
+		w := &Worker{Config: cfg}
+		msg := w.BuildPromptMsg("coder")
+		expected := "請待命，等候我給予你具體的開發與修正任務。，請立刻處理"
+		if msg != expected {
+			t.Errorf("預期為 '%s'，但得到 '%s'", expected, msg)
+		}
+	})
+}
