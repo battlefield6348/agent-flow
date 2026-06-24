@@ -60,7 +60,7 @@ func TestHttpGitLabRepository_FetchPendingTodos(t *testing.T) {
 
 func TestHttpGitLabRepository_FetchMergeRequestPipelines(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/projects/group%2Fproject/merge_requests/456/pipelines" {
+		if r.URL.Path != "/api/v4/projects/group/project/merge_requests/456/pipelines" {
 			t.Errorf("Expected path, got %s", r.URL.Path)
 		}
 		pipelines := []struct {
