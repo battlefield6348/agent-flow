@@ -21,6 +21,7 @@ stop:
 	@echo "Stopping all AI services..."
 	@# 先優雅關閉 tmux session
 	@tmux kill-session -t reviewer 2>/dev/null || true
+	@tmux kill-session -t coder 2>/dev/null || true
 	@# 再精確殺掉 agent-flow 執行檔
 	@pkill -x agent-flow 2>/dev/null || true
 	@ps aux | grep "go run ./cmd/agent-flow/main.go" | grep -v grep | awk '{print $$2}' | xargs -r kill -9 || true
@@ -50,7 +51,7 @@ attach-r:
 status:
 	@echo "Current AI Sessions:"
 	@echo "----------------------------------------------------"
-	@tmux ls 2>/dev/null | grep -E 'reviewer' || echo "All AI Workers are OFFLINE."
+	@tmux ls 2>/dev/null | grep -E 'reviewer|coder' || echo "All AI Workers are OFFLINE."
 	@echo "----------------------------------------------------"
 
 # --- 輔助指令 ---
