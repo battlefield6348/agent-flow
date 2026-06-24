@@ -41,20 +41,20 @@ func (s *OrchestratorService) SetCheckCISuccess(val bool) {
 	s.checkCISuccess = val
 }
 
-// ScanAndAssign 執行掃描與任務分派的核心業務邏輯
-func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects, allowedAuthors []string) error {
-	slog.Debug("Scanning GitLab Todos")
-	todos, err := s.gitlabRepo.FetchPendingTodos(ctx)
+// ScanAndAssignForAgent 針對特定的 Agent 執行掃描與任務分派的核心業務邏輯
+func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string) error {
+	slog.Debug("Scanning GitLab Todos", "agent_id", agentID)
+	todos, err := repo.FetchPendingTodos(ctx)
 	if err != nil {
 		return fmt.Errorf("fetch todos failed: %w", err)
 	}
 
 	if len(todos) == 0 {
-		slog.Debug("Scan complete: 0 pending Todos found")
+		slog.Debug("Scan complete: 0 pending Todos found", "agent_id", agentID)
 		return nil
 	}
 
-	slog.Info("Pending Todos found", "count", len(todos))
+	slog.Info("Pending Todos found", "agent_id", agentID, "count", len(todos))
 
 	for _, todo := range todos {
 		mr := todo.MergeRequest
@@ -63,7 +63,7 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 		// 僅處理開啟狀態的 Merge Request，避免對已合併或關閉的任務進行無謂的操作
 		if strings.ToLower(mr.State) != "opened" {
 			slog.Info("Cleaning up non-opened MR Todo", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "state", mr.State)
-			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
+			_ = repo.MarkTodoAsDone(ctx, todo.ID)
 			continue
 		}
 
@@ -80,14 +80,14 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 		}
 
 		// 檢查 Worker 忙碌狀態以實現背壓控流，避免資源競爭或重複指派
-		if s.workerManager != nil && s.isReviewerBusy() {
-			slog.Info("Reviewer is busy, postponing MR", "mr_iid", mr.IID)
+		if s.workerManager != nil && s.isWorkerBusy(agentID) {
+			slog.Info("Worker is busy, postponing MR", "worker_id", agentID, "mr_iid", mr.IID)
 			continue
 		}
 
 		// 檢查 CI 狀態
 		if s.checkCISuccess {
-			pipelines, err := s.gitlabRepo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
+			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
 			if err != nil {
 				slog.Error("Failed to fetch pipelines for MR", "project", projectPath, "mr_iid", mr.IID, "error", err)
 				continue
@@ -113,10 +113,10 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 
 		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
 		if s.workerManager != nil {
-			s.assignToReviewer(mr, localPath)
-			_ = s.gitlabRepo.MarkTodoAsDone(ctx, todo.ID)
+			s.assignToWorker(agentID, mr, localPath)
+			_ = repo.MarkTodoAsDone(ctx, todo.ID)
 		} else {
-			slog.Info("Mock mode: task assignment", "mr_iid", mr.IID, "workspace", localPath)
+			slog.Info("Mock mode: task assignment", "agent_id", agentID, "mr_iid", mr.IID, "workspace", localPath)
 		}
 	}
 
@@ -136,28 +136,34 @@ func (s *OrchestratorService) isAllowed(target string, allowedList []string) boo
 	return false
 }
 
-func (s *OrchestratorService) isReviewerBusy() bool {
+func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
 	for _, w := range s.workerManager.Workers {
-		if w.Config.ID == "reviewer" && w.IsBusy() {
+		if w.Config.ID == agentID && w.IsBusy() {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *OrchestratorService) assignToReviewer(mr MergeRequest, localPath string) {
+func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string) {
 	for _, w := range s.workerManager.Workers {
-		if w.Config.ID == "reviewer" {
+		if w.Config.ID == agentID {
 			if w.Config.Workspace != localPath {
-				slog.Info("Switching reviewer workspace", "from", w.Config.Workspace, "to", localPath)
+				slog.Info("Switching worker workspace", "worker_id", agentID, "from", w.Config.Workspace, "to", localPath)
 				w.Stop()
 				w.Config.Workspace = localPath
 				w.Start()
 				time.Sleep(15 * time.Second)
 			}
-			instruction := fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
+			var actionName string
+			if agentID == "reviewer" {
+				actionName = "評審"
+			} else {
+				actionName = "處理"
+			}
+			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s\n", actionName, mr.IID, mr.WebURL)
 			w.SendInput(instruction)
-			slog.Info("Assigned task to reviewer", "mr_iid", mr.IID)
+			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}
 	}
 }
