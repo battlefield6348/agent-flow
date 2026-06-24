@@ -31,6 +31,7 @@ type CollaboratorConfig struct {
 	InputPrefix       string   `yaml:"input_prefix"`
 	OnlyFinalResponse bool     `yaml:"only_final_response"`
 	Workspace         string   `yaml:"workspace"`
+	GitLabToken       string   `yaml:"gitlab_token"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -74,6 +75,9 @@ func (c *Config) Validate() error {
 		}
 		if col.Cmd == "" {
 			return fmt.Errorf("collaborator %s command (cmd) cannot be empty", col.ID)
+		}
+		if col.GitLabToken == "" {
+			return fmt.Errorf("collaborator %s: gitlab_token cannot be empty (Strict Mode)", col.ID)
 		}
 	}
 	return nil
