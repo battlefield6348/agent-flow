@@ -57,3 +57,21 @@ func (r *HttpGitLabRepository) GetUsername(ctx context.Context) (string, error) 
 	}
 	return user.Username, nil
 }
+
+// FetchMergeRequestPipelines 取得特定 MR 的 Pipeline 狀態列表
+func (r *HttpGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error) {
+	rawPipelines, err := r.client.FetchMergeRequestPipelines(ctx, projectPath, mrIID)
+	if err != nil {
+		return nil, err
+	}
+
+	var pipelines []Pipeline
+	for _, rp := range rawPipelines {
+		pipelines = append(pipelines, Pipeline{
+			ID:     rp.ID,
+			Status: rp.Status,
+		})
+	}
+	return pipelines, nil
+}
+

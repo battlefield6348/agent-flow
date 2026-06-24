@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -121,3 +122,37 @@ func (c *Client) GetCurrentUser(ctx context.Context) (*UserDTO, error) {
 	}
 	return &user, nil
 }
+
+type PipelineDTO struct {
+	ID     int    `json:"id"`
+	Status string `json:"status"`
+	Ref    string `json:"ref"`
+	SHA    string `json:"sha"`
+}
+
+func (c *Client) FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]PipelineDTO, error) {
+	encodedPath := url.PathEscape(projectPath)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests/%d/pipelines", c.baseURL, encodedPath, mrIID)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitLab API returned status: %s", resp.Status)
+	}
+
+	var pipelines []PipelineDTO
+	if err := json.NewDecoder(resp.Body).Decode(&pipelines); err != nil {
+		return nil, err
+	}
+	return pipelines, nil
+}
+

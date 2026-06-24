@@ -57,3 +57,31 @@ func TestHttpGitLabRepository_FetchPendingTodos(t *testing.T) {
 		t.Errorf("Data mismatch in fetched todo")
 	}
 }
+
+func TestHttpGitLabRepository_FetchMergeRequestPipelines(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/projects/group%2Fproject/merge_requests/456/pipelines" {
+			t.Errorf("Expected path, got %s", r.URL.Path)
+		}
+		pipelines := []struct {
+			ID     int    `json:"id"`
+			Status string `json:"status"`
+		}{
+			{ID: 789, Status: "success"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(pipelines)
+	}))
+	defer server.Close()
+
+	repo := NewHttpGitLabRepository(server.URL, "fake-token")
+	pipelines, err := repo.FetchMergeRequestPipelines(context.Background(), "group/project", 456)
+	if err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+
+	if len(pipelines) != 1 || pipelines[0].Status != "success" {
+		t.Errorf("Mismatch in fetched pipelines")
+	}
+}
+

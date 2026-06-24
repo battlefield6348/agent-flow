@@ -13,6 +13,7 @@ type GitLabRepository interface {
 	FetchPendingTodos(ctx context.Context) ([]Todo, error)
 	MarkTodoAsDone(ctx context.Context, todoID int) error
 	GetUsername(ctx context.Context) (string, error)
+	FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error)
 }
 
 // WorkspaceRepository 定義本地工作區管理的介面 (Port)
