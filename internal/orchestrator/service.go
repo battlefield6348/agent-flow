@@ -50,7 +50,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 	}
 
 	if len(todos) == 0 {
-		slog.Debug("Scan complete: 0 pending Todos found", "agent_id", agentID)
+		slog.Info("Scan complete: 0 pending Todos found", "agent_id", agentID)
 		return nil
 	}
 
@@ -69,13 +69,13 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		// 根據專案白名單過濾，確保僅在授權的專案範圍內運作
 		if !s.isAllowed(projectPath, allowedProjects) {
-			slog.Debug("Skipping Todo: project not allowed", "todo_id", todo.ID, "project", projectPath)
+			slog.Info("Skipping Todo: project not allowed", "todo_id", todo.ID, "project", projectPath)
 			continue
 		}
 
 		// 根據作者白名單過濾，用於限定特定開發者的 MR 評審任務
 		if !s.isAllowed(mr.Author, allowedAuthors) {
-			slog.Debug("Skipping Todo: author not allowed", "todo_id", todo.ID, "mr_iid", mr.IID, "author", mr.Author)
+			slog.Info("Skipping Todo: author not allowed", "todo_id", todo.ID, "mr_iid", mr.IID, "author", mr.Author)
 			continue
 		}
 
@@ -100,7 +100,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 					continue
 				}
 			} else {
-				slog.Debug("No associated CI/pipelines found, proceeding", "mr_iid", mr.IID)
+				slog.Info("No associated CI/pipelines found, proceeding", "mr_iid", mr.IID)
 			}
 		}
 

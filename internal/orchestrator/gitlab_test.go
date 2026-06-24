@@ -84,4 +84,3 @@ func TestHttpGitLabRepository_FetchMergeRequestPipelines(t *testing.T) {
 		t.Errorf("Mismatch in fetched pipelines")
 	}
 }
-

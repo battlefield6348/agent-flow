@@ -155,4 +155,3 @@ func (c *Client) FetchMergeRequestPipelines(ctx context.Context, projectPath str
 	}
 	return pipelines, nil
 }
-

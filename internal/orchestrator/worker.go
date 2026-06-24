@@ -127,6 +127,8 @@ func (w *Worker) isPromptReady(screen string) bool {
 		">",
 		"›",
 		"»",
+		"%",
+		"➜",
 		"Type your message",
 		"workspace (",
 		"shift+tab",
@@ -155,7 +157,9 @@ func (w *Worker) runProcess() {
 			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skill)
 			if _, err := os.Stat(skillPath); err == nil {
 				// 只有在 ~/.gemini/antigravity/skills 下存在的技能才屬於 superpowers
-				additionalArgs = append(additionalArgs, "--add-dir", skillPath)
+				if !strings.Contains(w.Config.Cmd, "agy") {
+					additionalArgs = append(additionalArgs, "--add-dir", skillPath)
+				}
 				superpowersSkills = append(superpowersSkills, skill)
 			}
 		}
@@ -170,7 +174,35 @@ func (w *Worker) runProcess() {
 		fullCmd = w.Config.Cmd
 	}
 
-	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, os.Environ()); err != nil {
+	var cleanEnv []string
+	hasTerm := false
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, "VSCODE_") || strings.HasPrefix(env, "ANTIGRAVITY_") || strings.HasPrefix(env, "TERM_PROGRAM=") || strings.HasPrefix(env, "ELECTRON_RUN_AS_NODE=") {
+			continue
+		}
+		if strings.HasPrefix(env, "TERM=") {
+			cleanEnv = append(cleanEnv, "TERM=screen-256color")
+			hasTerm = true
+			continue
+		}
+		if strings.HasPrefix(env, "PATH=") {
+			pathVal := strings.TrimPrefix(env, "PATH=")
+			var cleanPaths []string
+			for _, p := range strings.Split(pathVal, ":") {
+				if !strings.Contains(p, "remote-cli") {
+					cleanPaths = append(cleanPaths, p)
+				}
+			}
+			cleanEnv = append(cleanEnv, "PATH="+strings.Join(cleanPaths, ":"))
+			continue
+		}
+		cleanEnv = append(cleanEnv, env)
+	}
+	if !hasTerm {
+		cleanEnv = append(cleanEnv, "TERM=screen-256color")
+	}
+
+	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, cleanEnv); err != nil {
 		slog.Error("Failed to start terminal", "worker_id", sessionID, "error", err)
 		return
 	}
@@ -192,10 +224,23 @@ func (w *Worker) runProcess() {
 	}
 
 	if ready && len(superpowersSkills) > 0 {
+		time.Sleep(5 * time.Second)
 		for _, skill := range superpowersSkills {
-			// 僅對載入至 superpowers 技能庫的套件進行指令初始化
 			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
-			skillCmd := fmt.Sprintf("/superpowers:%s 請待命，等候我給予你具體的 Merge Request 評審任務。", skill)
+			var promptMsg string
+			switch sessionID {
+			case "coder":
+				promptMsg = "請待命，等候我給予你具體的開發與修正任務。"
+			case "reviewer":
+				promptMsg = "請待命，等候我給予你具體的 Merge Request 評審任務。"
+			default:
+				promptMsg = "請待命，等候我給予你具體的任務。"
+			}
+			prefix := "$"
+			if strings.Contains(w.Config.Cmd, "agy") {
+				prefix = "/"
+			}
+			skillCmd := fmt.Sprintf("%s%s %s", prefix, skill, promptMsg)
 			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
 
 			time.Sleep(5 * time.Second)

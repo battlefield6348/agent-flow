@@ -67,7 +67,6 @@ func main() {
 	monitorAnswers(logDir)
 }
 
-
 func monitorAnswers(logDir string) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()

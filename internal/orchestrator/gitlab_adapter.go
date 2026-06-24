@@ -74,4 +74,3 @@ func (r *HttpGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, p
 	}
 	return pipelines, nil
 }
-

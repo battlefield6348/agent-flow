@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type TmuxTerminal struct{}
@@ -15,16 +16,41 @@ func NewTmuxTerminal() *TmuxTerminal {
 }
 
 func (t *TmuxTerminal) Start(ctx context.Context, sessionID string, workspace string, cmdStr string, env []string) error {
-	slog.Debug("Terminal Start", "session_id", sessionID, "workspace", workspace, "cmd", cmdStr)
+	// 動態尋找絕對路徑，避免 shell 在非互動式環境中找不到命令
+	parts := strings.Fields(cmdStr)
+	if len(parts) > 0 {
+		exe := parts[0]
+		if !strings.HasPrefix(exe, "/") && !strings.HasPrefix(exe, "./") && !strings.HasPrefix(exe, "../") {
+			if fullPath, err := exec.LookPath(exe); err == nil {
+				parts[0] = fullPath
+				cmdStr = strings.Join(parts, " ")
+			}
+		}
+	}
+
 	// 先殺掉舊的 session
 	_ = t.Stop(sessionID)
 
 	var startCmd *exec.Cmd
+	useShell := strings.ContainsAny(cmdStr, ";&|><")
+
 	if workspace != "" {
 		_ = os.MkdirAll(workspace, 0755)
-		startCmd = exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", sessionID, "-c", workspace, "sh", "-c", cmdStr)
+		if useShell {
+			startCmd = exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", sessionID, "-c", workspace, "bash", "-c", cmdStr)
+		} else {
+			args := []string{"new-session", "-d", "-s", sessionID, "-c", workspace}
+			args = append(args, strings.Fields(cmdStr)...)
+			startCmd = exec.CommandContext(ctx, "tmux", args...)
+		}
 	} else {
-		startCmd = exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", sessionID, "sh", "-c", cmdStr)
+		if useShell {
+			startCmd = exec.CommandContext(ctx, "tmux", "new-session", "-d", "-s", sessionID, "bash", "-c", cmdStr)
+		} else {
+			args := []string{"new-session", "-d", "-s", sessionID}
+			args = append(args, strings.Fields(cmdStr)...)
+			startCmd = exec.CommandContext(ctx, "tmux", args...)
+		}
 	}
 	startCmd.Env = env
 
@@ -47,6 +73,7 @@ func (t *TmuxTerminal) SendKeys(sessionID string, keys string, enter bool) error
 		return err
 	}
 	if enter {
+		time.Sleep(500 * time.Millisecond)
 		return exec.Command("tmux", "send-keys", "-t", sessionID, "C-m").Run()
 	}
 	return nil

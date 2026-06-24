@@ -21,3 +21,10 @@ collaborators:
     cmd: "agy"
     args: []
     skills: ["git-mr-workflow-reviewer"]
+
+  - id: "coder"
+    name: "自動編碼 (Coder)"
+    gitlab_token: "your_coder_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
+    cmd: "agy"
+    args: []
+    skills: ["git-mr-workflow-coder"]

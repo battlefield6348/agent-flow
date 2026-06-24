@@ -135,4 +135,3 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		}
 	})
 }
-

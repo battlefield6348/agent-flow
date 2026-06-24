@@ -22,9 +22,10 @@ stop:
 	@# 先優雅關閉 tmux session
 	@tmux kill-session -t reviewer 2>/dev/null || true
 	@tmux kill-session -t coder 2>/dev/null || true
-	@# 再精確殺掉 agent-flow 執行檔
+	@# 再精確殺掉以目前專案目錄運行的 Go 執行檔與孤兒進程
 	@pkill -x agent-flow 2>/dev/null || true
 	@ps aux | grep "go run ./cmd/agent-flow/main.go" | grep -v grep | awk '{print $$2}' | xargs -r kill -9 || true
+	@lsof +D . 2>/dev/null | grep -E '\bmain\b' | awk '{print $$2}' | xargs -r kill -9 || true
 	@echo "All services stopped."
 
 # 清理環境 (日誌、暫存檔與編譯檔)
