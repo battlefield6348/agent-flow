@@ -15,6 +15,7 @@ type Config struct {
 	Scheduler struct {
 		IntervalSeconds  int      `yaml:"interval_seconds"`
 		GitLabURL        string   `yaml:"gitlab_url"`
+		CheckCISuccess   *bool    `yaml:"check_ci_success"`
 		AllowedProjects  []string `yaml:"allowed_projects"`
 		AllowedMRAuthors []string `yaml:"allowed_mr_authors"`
 	} `yaml:"scheduler"`
@@ -56,6 +57,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Scheduler.GitLabURL == "" {
 		c.Scheduler.GitLabURL = "https://git.efaipd.com"
+	}
+	if c.Scheduler.CheckCISuccess == nil {
+		defaultVal := true
+		c.Scheduler.CheckCISuccess = &defaultVal
 	}
 }
 

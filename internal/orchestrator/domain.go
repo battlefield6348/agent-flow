@@ -19,3 +19,8 @@ type Todo struct {
 	Project      string
 	MergeRequest MergeRequest
 }
+
+type Pipeline struct {
+	ID     int
+	Status string
+}
