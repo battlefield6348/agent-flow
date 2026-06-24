@@ -17,6 +17,7 @@ scheduler:
 collaborators:
   - id: "reviewer"
     name: "架構評審 (Reviewer)"
+    gitlab_token: "your_reviewer_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
     cmd: "agy"
     args: []
-    skills: ["gitlab-professional-reviewer"]
+    skills: ["git-mr-workflow-reviewer"]
