@@ -51,7 +51,7 @@ func main() {
 	workerManager.StartAll()
 
 	interval := time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second
-	scheduler := orchestrator.NewScheduler(service, interval, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors)
+	scheduler := orchestrator.NewScheduler(service, interval, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors, cfg.Collaborators, gitlabURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
