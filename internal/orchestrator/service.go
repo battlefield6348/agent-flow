@@ -23,9 +23,10 @@ type WorkspaceRepository interface {
 
 // OrchestratorService 負責協調任務排程的業務邏輯 (Use Case)
 type OrchestratorService struct {
-	gitlabRepo    GitLabRepository
-	workspaceRepo WorkspaceRepository
-	workerManager *WorkerManager
+	gitlabRepo     GitLabRepository
+	workspaceRepo  WorkspaceRepository
+	workerManager  *WorkerManager
+	checkCISuccess bool
 }
 
 func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *WorkerManager) *OrchestratorService {
@@ -34,6 +35,10 @@ func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *Wor
 		workspaceRepo: ws,
 		workerManager: wm,
 	}
+}
+
+func (s *OrchestratorService) SetCheckCISuccess(val bool) {
+	s.checkCISuccess = val
 }
 
 // ScanAndAssign 執行掃描與任務分派的核心業務邏輯
@@ -78,6 +83,25 @@ func (s *OrchestratorService) ScanAndAssign(ctx context.Context, allowedProjects
 		if s.workerManager != nil && s.isReviewerBusy() {
 			slog.Info("Reviewer is busy, postponing MR", "mr_iid", mr.IID)
 			continue
+		}
+
+		// 檢查 CI 狀態
+		if s.checkCISuccess {
+			pipelines, err := s.gitlabRepo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
+			if err != nil {
+				slog.Error("Failed to fetch pipelines for MR", "project", projectPath, "mr_iid", mr.IID, "error", err)
+				continue
+			}
+
+			if len(pipelines) > 0 {
+				latestStatus := pipelines[0].Status
+				if latestStatus != "success" {
+					slog.Info("CI is not successful yet, skipping assignment", "mr_iid", mr.IID, "status", latestStatus)
+					continue
+				}
+			} else {
+				slog.Debug("No associated CI/pipelines found, proceeding", "mr_iid", mr.IID)
+			}
 		}
 
 		// 定位本地工作區路徑，以便 Worker 能在正確的環境中執行靜態分析或測試

@@ -43,6 +43,9 @@ func main() {
 	workerManager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir, terminal)
 
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
+	if cfg.Scheduler.CheckCISuccess != nil {
+		service.SetCheckCISuccess(*cfg.Scheduler.CheckCISuccess)
+	}
 
 	slog.Info("Starting local Workers in tmux...")
 	workerManager.StartAll()
