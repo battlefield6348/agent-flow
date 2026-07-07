@@ -16,7 +16,7 @@ type Worker struct {
 	LogDir         string
 	Terminal       Terminal
 	stopCh         chan struct{}
-	inputCh        chan string
+	inputCh        chan WorkerTask
 	outputCallback func(string)
 	lastOutput     string
 	muLast         sync.Mutex
@@ -24,6 +24,11 @@ type Worker struct {
 	muBusy         sync.Mutex
 	running        bool
 	muRun          sync.Mutex
+}
+
+type WorkerTask struct {
+	Text      string
+	OnSuccess func(string)
 }
 
 // 判定此 Worker 是否正在執行對話任務中
@@ -57,16 +62,16 @@ func NewWorker(cfg CollaboratorConfig, logDir string, terminal Terminal) *Worker
 		LogDir:   logDir,
 		Terminal: terminal,
 		stopCh:   make(chan struct{}),
-		inputCh:  make(chan string, 10),
+		inputCh:  make(chan WorkerTask, 10),
 	}
 }
 
 func (w *Worker) BuildPromptMsg(sessionID string) string {
 	var promptMsg string
 	switch sessionID {
-	case "coder":
+	case agentIDCoder:
 		promptMsg = "請待命，等候我給予你具體的開發與修正任務。"
-	case "reviewer":
+	case agentIDReviewer:
 		promptMsg = "請待命，等候我給予你具體的 Merge Request 評審任務。"
 	default:
 		promptMsg = "請待命，等候我給予你具體的任務。"
@@ -78,10 +83,16 @@ func (w *Worker) BuildPromptMsg(sessionID string) string {
 }
 
 func (w *Worker) SendInput(text string) {
+	w.SendTask(WorkerTask{Text: text})
+}
+
+func (w *Worker) SendTask(task WorkerTask) {
+	text := task.Text
 	if w.Config.InputPrefix != "" {
 		text = w.Config.InputPrefix + text
 	}
-	w.inputCh <- text
+	task.Text = text
+	w.inputCh <- task
 }
 
 func (w *Worker) Start() {
@@ -136,12 +147,46 @@ func (w *Worker) isPromptReady(screen string) bool {
 		}
 	}
 
-	var prompts []string
-	cmdLower := strings.ToLower(w.Config.Cmd)
-	if w.Config.ID == "reviewer" || strings.Contains(cmdLower, "agy") || strings.Contains(cmdLower, "antigravity") {
-		prompts = []string{">", "»", "Type your message"}
-	} else {
-		prompts = []string{"›", "Type your message", "workspace (", "shift+tab"}
+	// 檢查最後幾行是否為「確認對話框 / 選單」，若是則代表 CLI 正等待「選擇」而非等待「輸入」，
+	// 必須視為未就緒——否則選單中的 ❯（如 Claude 的 --dangerously-skip-permissions 首次接受畫面
+	// 「❯ 1. No, exit」）會讓下方的提示字元偵測誤判成就緒，導致注入的指令被送進對話框而遺失。
+	// 注意：這些字串刻意避開就緒狀態頁尾的字樣（如「bypass permissions on」「esc to interrupt」）。
+	dialogMarkers := []string{
+		"do you want to proceed",
+		"esc to cancel",
+		"no, exit",
+		"yes, i accept",
+		"bypass permissions mode",
+		"press enter to continue",
+	}
+	for _, row := range lastRows {
+		lower := strings.ToLower(row)
+		for _, m := range dialogMarkers {
+			if strings.Contains(lower, m) {
+				return false
+			}
+		}
+		// 選單箭頭指向編號選項（如「❯ 1. ...」）也代表在等待選擇而非輸入
+		trimmed := strings.TrimSpace(row)
+		if rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "❯")); rest != trimmed {
+			if len(rest) >= 2 && rest[0] >= '1' && rest[0] <= '9' && rest[1] == '.' {
+				return false
+			}
+		}
+	}
+
+	// 檢查最後幾行是否包含提示字元
+	prompts := []string{
+		">",
+		"›",
+		"»",
+		"❯", // Claude Code v2 的輸入提示符 (U+276F)
+		"%",
+		"➜",
+		"Type your message",
+		"workspace (",
+		"shift+tab",
+		"gpt-5.3-codex",
 	}
 
 	for _, row := range lastRows {
@@ -163,6 +208,14 @@ func (w *Worker) runProcess() {
 
 	var additionalArgs []string
 	var superpowersSkills []string
+	// 各 CLI 讀取 skill 的基底目錄不同：agy(Antigravity)原生 /技能名 只認它自己的
+	// ~/.gemini/antigravity/skills；claude/codex 靠 --add-dir + 明確路徑，用中性的
+	// ~/.agent-flow/skills。兩個目錄都由 `make install-skills` 一次安裝，故 skill
+	// 只需維護在 repo 的 skills/，三種 CLI 都吃得到。
+	skillsBase := ".agent-flow/skills"
+	if strings.Contains(w.Config.Cmd, "agy") {
+		skillsBase = ".gemini/antigravity/skills"
+	}
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		for _, skill := range w.Config.Skills {
@@ -171,7 +224,7 @@ func (w *Worker) runProcess() {
 			if strings.HasPrefix(skill, "superpowers:") {
 				skillName = strings.TrimPrefix(skill, "superpowers:")
 			}
-			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skillName)
+			skillPath := filepath.Join(homeDir, skillsBase, skillName)
 			if _, err := os.Stat(skillPath); err == nil {
 				if !strings.Contains(w.Config.Cmd, "agy") {
 					additionalArgs = append(additionalArgs, "--add-dir", skillPath)
@@ -218,6 +271,14 @@ func (w *Worker) runProcess() {
 		cleanEnv = append(cleanEnv, "TERM=screen-256color")
 	}
 
+	// 注入此 collaborator 專屬的 GitLab token,讓 CLI 在 workspace 內以此身分留言/發 note。
+	// 沒有這一步時,CLI 會退回讀 glab 的登入設定檔(通常是使用者本人),導致審查留言掛錯帳號
+	// (例如 reviewer 角色應顯示為 bot 卻顯示成使用者)。glab 會優先採用 GITLAB_TOKEN 環境變數,
+	// 目標 host 由 workspace 的 git remote 自動解析,故不需另設 GITLAB_HOST。
+	if w.Config.GitLabToken != "" {
+		cleanEnv = append(cleanEnv, "GITLAB_TOKEN="+w.Config.GitLabToken)
+	}
+
 	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, cleanEnv); err != nil {
 		slog.Error("Failed to start terminal", "worker_id", sessionID, "error", err)
 		return
@@ -250,8 +311,16 @@ func (w *Worker) runProcess() {
 		for _, skill := range superpowersSkills {
 			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
 			promptMsg := w.BuildPromptMsg(sessionID)
-			prefix := w.GetSkillPrefix()
-			skillCmd := fmt.Sprintf("%s%s %s", prefix, skill, promptMsg)
+			var skillCmd string
+			if strings.Contains(w.Config.Cmd, "agy") {
+				// Antigravity 原生技能，透過 /技能名 呼叫
+				skillCmd = fmt.Sprintf("/%s %s", skill, promptMsg)
+			} else {
+				// claude / codex 等 CLI 無此原生指令，技能檔已透過 --add-dir 掛入，
+				// 改以自然語言指示其讀取並遵循該技能檔的工作流程
+				skillPath := filepath.Join(homeDir, skillsBase, skill)
+				skillCmd = fmt.Sprintf("請先閱讀並嚴格遵循技能檔 %s/SKILL.md 內的工作流程，然後%s", skillPath, promptMsg)
+			}
 			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
 
 			time.Sleep(5 * time.Second)
@@ -269,8 +338,8 @@ func (w *Worker) runProcess() {
 	go func() {
 		for {
 			select {
-			case input := <-w.inputCh:
-				w.handleInput(input, sessionID)
+			case task := <-w.inputCh:
+				w.handleInput(task, sessionID)
 			case <-stopInput:
 				return
 			case <-w.stopCh:
@@ -299,10 +368,11 @@ func (w *Worker) runProcess() {
 }
 
 // handleInput 處理來自通道的指令，並追蹤其忙碌狀態與結果輸出
-func (w *Worker) handleInput(input string, sessionID string) {
+func (w *Worker) handleInput(task WorkerTask, sessionID string) {
 	w.setBusy(true)
 	defer w.setBusy(false)
 
+	input := task.Text
 	slog.Info("Forwarding input to worker", "worker_id", sessionID, "input", input)
 
 	if !w.waitForReady(45) {
@@ -320,7 +390,9 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		slog.Warn("Polling timeout or interrupted", "worker_id", sessionID)
 	}
 
-	w.processAndSaveOutput(sessionID, nBefore, input)
+	if output, ok := w.processAndSaveOutput(sessionID, nBefore, input); ok && task.OnSuccess != nil {
+		task.OnSuccess(output)
+	}
 }
 
 // waitForReady 等待終端出現可輸入提示
@@ -372,11 +444,11 @@ func (w *Worker) getHistoryLineCount(sessionID string) int {
 }
 
 // processAndSaveOutput 提取增量歷史，進行清理過濾後保存至檔案並觸發回調
-func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInput string) {
+func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInput string) (string, bool) {
 	linesAfter, err := w.Terminal.CaptureHistory(sessionID)
 	if err != nil {
 		slog.Error("Error getting terminal history", "worker_id", sessionID, "error", err)
-		return
+		return "", false
 	}
 
 	var newLines []string
@@ -386,9 +458,18 @@ func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInp
 		newLines = linesAfter
 	}
 
-	fullText := w.filterAndJoinLines(newLines, originalInput)
+	return w.processAndSaveOutputFromLines(sessionID, newLines, originalInput)
+}
+
+func (w *Worker) processAndSaveOutputFromLines(sessionID string, lines []string, originalInput string) (string, bool) {
+	fullText := w.filterAndJoinLines(lines, originalInput)
 	if fullText == "" {
-		return
+		return "", false
+	}
+
+	if HasFatalOutput(fullText) {
+		slog.Error("Worker produced fatal terminal output", "worker_id", sessionID, "output", fullText)
+		return "", false
 	}
 
 	w.muLast.Lock()
@@ -404,6 +485,7 @@ func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInp
 		w.lastOutput = fullText
 		w.muLast.Unlock()
 	}
+	return fullText, true
 }
 
 // filterAndJoinLines 清理增量行並拼接成最終文本
@@ -434,7 +516,7 @@ func (w *Worker) filterAndJoinLines(lines []string, originalInput string) string
 	fullText := strings.TrimSpace(strings.Join(cleanLines, "\n"))
 	fullText = CleanBlock(fullText)
 
-	if w.Config.OnlyFinalResponse || w.Config.ID == "reviewer" || w.Config.ID == "coder" {
+	if w.Config.OnlyFinalResponse || w.Config.ID == agentIDReviewer || w.Config.ID == agentIDCoder {
 		fullText = ParseFinalResponse(fullText)
 	}
 	return fullText
@@ -462,19 +544,6 @@ func (w *Worker) Stop() {
 	sessionID := w.Config.ID
 	slog.Info("Stopping worker terminal session", "worker_id", sessionID)
 	_ = w.Terminal.Stop(sessionID)
-}
-
-// GetSkillPrefix 依據執行命令與協作者 ID 決定技能前綴字元。
-// 為了避免多平台指令混淆，針對 agy/antigravity 體系使用 '/'，對 codex 體系使用 '$'。
-func (w *Worker) GetSkillPrefix() string {
-	prefix := "$"
-	cmdLower := strings.ToLower(w.Config.Cmd)
-	if w.Config.ID == "reviewer" || strings.Contains(cmdLower, "agy") || strings.Contains(cmdLower, "antigravity") {
-		prefix = "/"
-	} else if w.Config.ID == "coder" || strings.Contains(cmdLower, "codex") {
-		prefix = "$"
-	}
-	return prefix
 }
 
 type WorkerManager struct {

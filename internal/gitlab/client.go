@@ -50,6 +50,14 @@ type UserDTO struct {
 	Username string `json:"username"`
 }
 
+type NoteDTO struct {
+	ID     int    `json:"id"`
+	Body   string `json:"body"`
+	Author struct {
+		Username string `json:"username"`
+	} `json:"author"`
+}
+
 // FetchPendingTodos 呼叫 GitLab API 取得待處理的待辦事項
 func (c *Client) FetchPendingTodos(ctx context.Context) ([]TodoDTO, error) {
 	apiURL := fmt.Sprintf("%s/api/v4/todos?state=pending&type=MergeRequest&per_page=100", c.baseURL)
@@ -95,6 +103,33 @@ func (c *Client) MarkTodoAsDone(ctx context.Context, todoID int) error {
 		return fmt.Errorf("mark_as_done returned status: %s", resp.Status)
 	}
 	return nil
+}
+
+// FetchMergeRequestNotes 呼叫 GitLab API 取得指定 MR 的留言列表
+func (c *Client) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]NoteDTO, error) {
+	encodedPath := url.PathEscape(projectPath)
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests/%d/notes?per_page=100", c.baseURL, encodedPath, mrIID)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch MR notes returned status: %s", resp.Status)
+	}
+
+	var notes []NoteDTO
+	if err := json.NewDecoder(resp.Body).Decode(&notes); err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
 
 // GetCurrentUser 呼叫 GitLab API 取得當前使用者資訊

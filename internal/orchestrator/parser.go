@@ -17,6 +17,12 @@ var (
 
 	// 用於識別並分割 CLI TUI 輸出中的步驟分割線，以提取最終的對話答案
 	dividerRegex = regexp.MustCompile(`(?m)^[ \t]*[─\-\x{2500}]{5,}[ \t]*$`)
+
+	// reviewer/coder 真正的結構化回答通常從這些標題開始
+	reviewStartRegex = regexp.MustCompile(`(?m)^(## 審查結論|### 結論)\s*$`)
+
+	// 常見 CLI 狀態列/頁尾，若出現在 review 後方應視為噪音而截掉
+	reviewEndRegex = regexp.MustCompile(`(?m)^(gpt-[^\n]*|>_ OpenAI Codex[^\n]*|={8,}[^\n]*|[›•]\s.*)$`)
 )
 
 // CleanLine 處理單行文字的清理，確保輸出不含 ANSI 逃逸序列、不可見字元及動態加載雜訊
@@ -57,6 +63,14 @@ func CleanBlock(text string) string {
 
 // ParseFinalResponse 從完整文字中提取最終回答 (處理分割線)
 func ParseFinalResponse(text string) string {
+	if loc := reviewStartRegex.FindStringIndex(text); loc != nil {
+		text = text[loc[0]:]
+		if end := reviewEndRegex.FindStringIndex(text); end != nil {
+			text = text[:end[0]]
+		}
+		return strings.TrimSpace(text)
+	}
+
 	parts := dividerRegex.Split(text, -1)
 	if len(parts) > 0 {
 		finalText := strings.TrimSpace(parts[len(parts)-1])
@@ -84,6 +98,12 @@ var noiseList = []string{
 	"...", "✦",
 }
 
+var fatalOutputMarkers = []string{
+	"you've hit your session limit",
+	"/usage-credits",
+	"request more usage from your admin",
+}
+
 func ShouldIgnore(text string) bool {
 	t := strings.ToLower(text)
 	for _, n := range noiseList {
@@ -95,6 +115,16 @@ func ShouldIgnore(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if len(trimmed) < 2 {
 		return true
+	}
+	return false
+}
+
+func HasFatalOutput(text string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range fatalOutputMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
 	}
 	return false
 }
