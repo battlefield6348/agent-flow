@@ -135,3 +135,37 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		}
 	})
 }
+
+func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
+	w := &Worker{
+		Config: CollaboratorConfig{
+			ID:           "coder",
+			Cmd:          "codex",
+			PromptSuffix: "，請立刻處理",
+			Workspace:    "/local/path",
+		},
+		inputCh: make(chan string, 10),
+	}
+
+	wm := &WorkerManager{
+		Workers: []*Worker{w},
+	}
+
+	service := NewOrchestratorService(nil, nil, wm)
+	mr := MergeRequest{
+		IID:    101,
+		WebURL: "http://gitlab.com/mr/101",
+	}
+
+	service.assignToWorker("coder", mr, "/local/path")
+
+	select {
+	case sent := <-w.inputCh:
+		expected := "請開始處理 Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
+		if sent != expected {
+			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent)
+		}
+	default:
+		t.Fatalf("預期有發送指令到 inputCh，但沒收到")
+	}
+}

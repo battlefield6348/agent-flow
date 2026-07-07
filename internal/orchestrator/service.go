@@ -161,7 +161,11 @@ func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, lo
 			} else {
 				actionName = "處理"
 			}
-			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s\n", actionName, mr.IID, mr.WebURL)
+			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
+			if w.Config.PromptSuffix != "" {
+				instruction += w.Config.PromptSuffix
+			}
+			instruction += "\n"
 			w.SendInput(instruction)
 			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}
