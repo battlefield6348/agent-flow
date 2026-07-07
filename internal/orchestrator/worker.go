@@ -108,14 +108,13 @@ func (w *Worker) runLoop() {
 	}
 }
 
-// isPromptReady 檢查畫面最後幾行是否出現可輸入的提示，避免歷史中的舊提示符造成誤判
+// isPromptReady 檢查畫面最後幾行是否出現可輸入的提示，避免歷史中的舊提示符或標題列造成誤判
 func (w *Worker) isPromptReady(screen string) bool {
 	rawLines := strings.Split(screen, "\n")
 	if len(rawLines) == 0 {
 		return false
 	}
 
-	// 排除 tmux 視窗底部填充的空白空行，精確定位有內容的最後幾行
 	end := len(rawLines)
 	for end > 0 && strings.TrimSpace(rawLines[end-1]) == "" {
 		end--
@@ -130,7 +129,6 @@ func (w *Worker) isPromptReady(screen string) bool {
 	}
 	lastRows := rawLines[start:end]
 
-	// 檢查最後幾行是否有 thinking 等關鍵字，有的話說明還在處理中
 	for _, row := range lastRows {
 		lower := strings.ToLower(row)
 		if strings.Contains(lower, "thinking") || strings.Contains(lower, "queued") || strings.Contains(lower, "working") {
@@ -138,20 +136,18 @@ func (w *Worker) isPromptReady(screen string) bool {
 		}
 	}
 
-	// 檢查最後幾行是否包含提示字元
-	prompts := []string{
-		">",
-		"›",
-		"»",
-		"%",
-		"➜",
-		"Type your message",
-		"workspace (",
-		"shift+tab",
-		"gpt-5.3-codex",
+	var prompts []string
+	cmdLower := strings.ToLower(w.Config.Cmd)
+	if w.Config.ID == "reviewer" || strings.Contains(cmdLower, "agy") || strings.Contains(cmdLower, "antigravity") {
+		prompts = []string{">", "»", "Type your message"}
+	} else {
+		prompts = []string{"›", "Type your message", "workspace (", "shift+tab"}
 	}
 
 	for _, row := range lastRows {
+		if strings.Contains(row, "OpenAI Codex") || strings.Contains(row, "───") {
+			continue
+		}
 		for _, p := range prompts {
 			if strings.Contains(row, p) {
 				return true
@@ -228,6 +224,12 @@ func (w *Worker) runProcess() {
 	for i := 0; i < 45; i++ {
 		time.Sleep(2 * time.Second)
 		screen, _ := w.Terminal.CapturePane(sessionID)
+		if strings.Contains(screen, "Do you trust the contents of this project?") {
+			slog.Info("Trust prompt detected, sending Enter to confirm", "worker_id", sessionID)
+			_ = w.Terminal.SendKeys(sessionID, "", true)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 		if w.isPromptReady(screen) {
 			slog.Info("Worker CLI is READY", "worker_id", sessionID)
 			ready = true
