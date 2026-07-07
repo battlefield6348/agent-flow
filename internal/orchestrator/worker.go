@@ -244,10 +244,7 @@ func (w *Worker) runProcess() {
 		for _, skill := range superpowersSkills {
 			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
 			promptMsg := w.BuildPromptMsg(sessionID)
-			prefix := "$"
-			if strings.Contains(w.Config.Cmd, "agy") {
-				prefix = "/"
-			}
+			prefix := w.GetSkillPrefix()
 			skillCmd := fmt.Sprintf("%s%s %s", prefix, skill, promptMsg)
 			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
 
@@ -459,6 +456,19 @@ func (w *Worker) Stop() {
 	sessionID := w.Config.ID
 	slog.Info("Stopping worker terminal session", "worker_id", sessionID)
 	_ = w.Terminal.Stop(sessionID)
+}
+
+// GetSkillPrefix 依據執行命令與協作者 ID 決定技能前綴字元。
+// 為了避免多平台指令混淆，針對 agy/antigravity 體系使用 '/'，對 codex 體系使用 '$'。
+func (w *Worker) GetSkillPrefix() string {
+	prefix := "$"
+	cmdLower := strings.ToLower(w.Config.Cmd)
+	if w.Config.ID == "reviewer" || strings.Contains(cmdLower, "agy") || strings.Contains(cmdLower, "antigravity") {
+		prefix = "/"
+	} else if w.Config.ID == "coder" || strings.Contains(cmdLower, "codex") {
+		prefix = "$"
+	}
+	return prefix
 }
 
 type WorkerManager struct {

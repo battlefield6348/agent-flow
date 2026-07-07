@@ -11,6 +11,7 @@ import (
 type MockTerminal struct {
 	mu            sync.Mutex
 	sessionActive bool
+	sentKeys      []string
 }
 
 func (m *MockTerminal) Start(ctx context.Context, sessionID string, workspace string, cmd string, env []string) error {
@@ -28,7 +29,19 @@ func (m *MockTerminal) Stop(sessionID string) error {
 }
 
 func (m *MockTerminal) SendKeys(sessionID string, keys string, enter bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sentKeys = append(m.sentKeys, keys)
 	return nil
+}
+
+func (m *MockTerminal) GetSentKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 複製 slice 避免併發衝突
+	res := make([]string, len(m.sentKeys))
+	copy(res, m.sentKeys)
+	return res
 }
 
 func (m *MockTerminal) CapturePane(sessionID string) (string, error) {
@@ -118,4 +131,65 @@ func TestWorker_BuildPromptMsg(t *testing.T) {
 			t.Errorf("預期為 '%s'，但得到 '%s'", expected, msg)
 		}
 	})
+}
+
+func TestWorker_GetSkillPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		id       string
+		cmd      string
+		expected string
+	}{
+		{
+			name:     "Coder 與 codex 命令",
+			id:       "coder",
+			cmd:      "codex",
+			expected: "$",
+		},
+		{
+			name:     "Reviewer 與 agy 命令",
+			id:       "reviewer",
+			cmd:      "agy",
+			expected: "/",
+		},
+		{
+			name:     "Reviewer 與絕對路徑 agy 命令",
+			id:       "reviewer",
+			cmd:      "/home/user/.local/bin/agy",
+			expected: "/",
+		},
+		{
+			name:     "使用 antigravity 名稱的命令",
+			id:       "reviewer",
+			cmd:      "antigravity",
+			expected: "/",
+		},
+		{
+			name:     "使用包含 antigravity 的絕對路徑命令",
+			id:       "reviewer",
+			cmd:      "/home/user/.local/bin/antigravity",
+			expected: "/",
+		},
+		{
+			name:     "Coder 與絕對路徑 codex 命令",
+			id:       "coder",
+			cmd:      "/home/user/.nvm/versions/node/v24.13.0/bin/codex",
+			expected: "$",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &Worker{
+				Config: CollaboratorConfig{
+					ID:  tt.id,
+					Cmd: tt.cmd,
+				},
+			}
+			actual := w.GetSkillPrefix()
+			if actual != tt.expected {
+				t.Errorf("GetSkillPrefix() = %q, expected %q", actual, tt.expected)
+			}
+		})
+	}
 }
