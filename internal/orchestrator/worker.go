@@ -166,13 +166,17 @@ func (w *Worker) runProcess() {
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		for _, skill := range w.Config.Skills {
-			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skill)
+			// 移除可能存在的 "superpowers:" 前綴以取得正確的本地技能目錄名稱
+			skillName := skill
+			if strings.HasPrefix(skill, "superpowers:") {
+				skillName = strings.TrimPrefix(skill, "superpowers:")
+			}
+			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skillName)
 			if _, err := os.Stat(skillPath); err == nil {
-				// 只有在 ~/.gemini/antigravity/skills 下存在的技能才屬於 superpowers
 				if !strings.Contains(w.Config.Cmd, "agy") {
 					additionalArgs = append(additionalArgs, "--add-dir", skillPath)
 				}
-				superpowersSkills = append(superpowersSkills, skill)
+				superpowersSkills = append(superpowersSkills, skillName)
 			}
 		}
 	}
