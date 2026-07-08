@@ -64,6 +64,14 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 	slog.Info("Pending Todos found", "agent_id", agentID, "count", len(todos))
 
+	expectedGitLabUsername := ""
+	if agentID == agentIDCoder {
+		expectedGitLabUsername, err = repo.GetUsername(ctx)
+		if err != nil {
+			return fmt.Errorf("get username for agent %q failed: %w", agentID, err)
+		}
+	}
+
 	for _, todo := range todos {
 		mr := todo.MergeRequest
 		projectPath := todo.Project
@@ -144,7 +152,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				continue
 			}
 
-			s.assignToWorker(agentID, mr, localPath, func(_ string) {
+			s.assignToWorker(agentID, mr, localPath, expectedGitLabUsername, func(_ string) {
 				if err := s.handleWorkerSuccess(ctx, repo, agentID, todo.ID, projectPath, mr, botUsername, latestBotNoteID); err != nil {
 					slog.Error("Failed to finalize worker result", "todo_id", todo.ID, "mr_iid", mr.IID, "error", err)
 				}
@@ -179,7 +187,7 @@ func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
 	return false
 }
 
-func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, onSuccess func(string)) {
+func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, expectedGitLabUsername string, onSuccess func(string)) {
 	for _, w := range s.workerManager.Workers {
 		if w.Config.ID == agentID {
 			if w.Config.Workspace != localPath {
@@ -191,8 +199,9 @@ func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, lo
 			}
 			instruction := buildWorkerInstruction(agentID, mr)
 			w.SendTask(WorkerTask{
-				Text:      instruction,
-				OnSuccess: onSuccess,
+				Text:                   instruction,
+				ExpectedGitLabUsername: expectedGitLabUsername,
+				OnSuccess:              onSuccess,
 			})
 			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}

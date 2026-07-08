@@ -374,7 +374,7 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 			PromptSuffix: "，請立刻處理",
 			Workspace:    "/local/path",
 		},
-		inputCh: make(chan string, 10),
+		inputCh: make(chan WorkerTask, 10),
 	}
 
 	wm := &WorkerManager{
@@ -387,13 +387,13 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 		WebURL: "http://gitlab.com/mr/101",
 	}
 
-	service.assignToWorker("coder", mr, "/local/path")
+	service.assignToWorker("coder", mr, "/local/path", "", nil)
 
 	select {
 	case sent := <-w.inputCh:
-		expected := "請開始處理 Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
-		if sent != expected {
-			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent)
+		expected := "請處理 Merge Request 101 上的最新審查意見。網址為：http://gitlab.com/mr/101\n請讀取該 MR 上最新一則以「## 審查結論」開頭的審查留言，逐項修正其中的必修問題，並將修正 push 到該 MR 的同一個來源分支（不要另開新分支或新 MR）。完成後，在該 MR 留一則以「## 修正回覆」開頭的留言，逐項說明每條必修問題如何處理；不要貼思考過程、操作 transcript、狀態列或工具輸出。留言完成後，再把相同的最終內容輸出到終端。\n"
+		if sent.Text != expected {
+			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent.Text)
 		}
 	default:
 		t.Fatalf("預期有發送指令到 inputCh，但沒收到")

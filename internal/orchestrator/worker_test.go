@@ -14,6 +14,7 @@ import (
 type MockTerminal struct {
 	mu            sync.Mutex
 	sessionActive bool
+	lastCmd       string
 	sentKeys      []string
 	lastEnv       []string
 	history       []string
@@ -23,8 +24,15 @@ func (m *MockTerminal) Start(ctx context.Context, sessionID string, workspace st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionActive = true
+	m.lastCmd = cmd
 	m.lastEnv = env
 	return nil
+}
+
+func (m *MockTerminal) LastCmd() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastCmd
 }
 
 func (m *MockTerminal) LastEnv() []string {
@@ -166,6 +174,82 @@ func TestWorker_NoTokenNoInjection(t *testing.T) {
 	}
 }
 
+func TestWorker_NormalizesCodexHookTrustArg(t *testing.T) {
+	cfg := CollaboratorConfig{
+		ID:        "coder",
+		Cmd:       "codex",
+		Args:      []string{"--dangerously-bypass-hooks-trust", "--model", "gpt-5.3-codex"},
+		Workspace: "/tmp",
+	}
+	term := &MockTerminal{}
+	w := NewWorker(cfg, "/tmp/logs", term)
+
+	w.Start()
+	time.Sleep(100 * time.Millisecond)
+	w.Stop()
+
+	got := term.LastCmd()
+	if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+		t.Fatalf("預期啟動命令包含正規化後的 hook trust flag，實際為：%s", got)
+	}
+	if strings.Contains(got, "--dangerously-bypass-hooks-trust") {
+		t.Fatalf("不應保留錯誤的 hook trust flag，實際為：%s", got)
+	}
+}
+
+func TestWorker_HandleInput_AbortsCoderTaskWhenGitLabIdentityMismatch(t *testing.T) {
+	cfg := CollaboratorConfig{
+		ID:          "coder",
+		Workspace:   "/tmp",
+		GitLabToken: "glpat-coder",
+	}
+	term := &MockTerminal{sessionActive: true}
+	w := NewWorker(cfg, t.TempDir(), term)
+	w.probeGitLabUsername = func(workspace string, env []string) (string, error) {
+		return "group_187_bot_79ebbc0c1f062916eb910c5cd64912b8", nil
+	}
+
+	w.handleInput(WorkerTask{
+		Text:                   "請處理 MR 240",
+		ExpectedGitLabUsername: "yuying.chen",
+	}, "coder")
+
+	for _, key := range term.GetSentKeys() {
+		if strings.Contains(key, "請處理 MR 240") {
+			t.Fatalf("glab 身分不符時不應送出 coder 任務，實際送出：%q", key)
+		}
+	}
+}
+
+func TestWorker_HandleInput_AllowsCoderTaskWhenGitLabIdentityMatches(t *testing.T) {
+	cfg := CollaboratorConfig{
+		ID:          "coder",
+		Workspace:   "/tmp",
+		GitLabToken: "glpat-coder",
+	}
+	term := &MockTerminal{sessionActive: true}
+	w := NewWorker(cfg, t.TempDir(), term)
+	w.probeGitLabUsername = func(workspace string, env []string) (string, error) {
+		return "yuying.chen", nil
+	}
+
+	w.handleInput(WorkerTask{
+		Text:                   "請處理 MR 240",
+		ExpectedGitLabUsername: "yuying.chen",
+	}, "coder")
+
+	found := false
+	for _, key := range term.GetSentKeys() {
+		if strings.Contains(key, "請處理 MR 240") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("glab 身分正確時應送出 coder 任務")
+	}
+}
+
 func TestWorker_isPromptReady(t *testing.T) {
 	w := &Worker{}
 	cases := []struct {
@@ -179,6 +263,10 @@ func TestWorker_isPromptReady(t *testing.T) {
 		{"思考中未就緒", "✢ Marinating… (2m · still thinking with medium effort)", false},
 		{"bypass 首次接受畫面未就緒", "  WARNING: Claude Code running in Bypass Permissions mode\n  ❯ 1. No, exit\n    2. Yes, I accept\n  Enter to confirm · Esc to cancel", false},
 		{"一般權限確認對話框未就緒", " Do you want to proceed?\n ❯ 1. Yes\n   3. No\n Esc to cancel · Tab to amend", false},
+		// 忙碌訊號出現在畫面上方、頁尾提示符固定在底部時，不可誤判為就緒（實際踩雷案例）
+		{"spinner 在畫面上方且訊息排隊中未就緒", "✻ Fermenting… (5m 47s · ↓ 10.0k tokens · thinking with medium effort)\n  ⎿  Tip: Use ctrl+v to paste images\n  ❯ 請處理 Merge Request 240\n────\n❯ Press up to edit queued messages\n────\n  yuying@PC-2A01-251102:\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents", false},
+		{"spinner 剛起步僅動詞行未就緒", "✢ Seasoning…\n  ⎿  Tip: Use ctrl+v to paste images\n────\n❯ \n────\n  yuying@PC-2A01-251102:\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents", false},
+		{"spinner 完成字樣 Brewed 不影響就緒", "✻ Brewed for 40s\n────\n❯ \n────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
