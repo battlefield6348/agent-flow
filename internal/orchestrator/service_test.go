@@ -11,6 +11,7 @@ type MockGitLabRepository struct {
 	Todos       []Todo
 	Pipelines   []Pipeline
 	Notes       []Note
+	MR          *MergeRequest
 	Err         error
 	DoneTodoIDs []int
 }
@@ -30,6 +31,9 @@ func (m *MockGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, p
 }
 func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
 	return m.Notes, m.Err
+}
+func (m *MockGitLabRepository) FetchMergeRequest(ctx context.Context, projectPath string, mrIID int) (*MergeRequest, error) {
+	return m.MR, m.Err
 }
 
 type MockWorkspaceRepository struct {
@@ -445,5 +449,44 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 		}
 	default:
 		t.Fatalf("預期有發送指令到 inputCh，但沒收到")
+	}
+}
+
+func TestOrchestratorService_AssignMergeRequestForAgent_WaitsForValidReviewerNote(t *testing.T) {
+	gl := &MockGitLabRepository{
+		Notes: []Note{
+			{ID: 10, Author: "mockuser", Body: "old"},
+		},
+	}
+
+	w := &Worker{
+		Config: CollaboratorConfig{
+			ID:        "reviewer",
+			Workspace: "/local/path",
+		},
+		inputCh: make(chan WorkerTask, 1),
+	}
+
+	wm := &WorkerManager{Workers: []*Worker{w}}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, wm)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- service.AssignMergeRequestForAgent(context.Background(), "reviewer", gl, "group/project", MergeRequest{
+			IID:    101,
+			State:  "opened",
+			WebURL: "http://gitlab.com/mr/101",
+		})
+	}()
+
+	task := <-w.inputCh
+	gl.Notes = append(gl.Notes, Note{ID: 12, Author: "mockuser", Body: "## 審查結論\n需修改後再審"})
+	task.OnSuccess("## 審查結論\n需修改後再審")
+
+	if err := <-done; err != nil {
+		t.Fatalf("AssignMergeRequestForAgent failed: %v", err)
+	}
+	if len(gl.DoneTodoIDs) != 0 {
+		t.Fatalf("手動模式不應標記任何 todo done，實際 %v", gl.DoneTodoIDs)
 	}
 }

@@ -22,6 +22,7 @@ type GitLabRepository interface {
 	GetUsername(ctx context.Context) (string, error)
 	FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error)
 	FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error)
+	FetchMergeRequest(ctx context.Context, projectPath string, mrIID int) (*MergeRequest, error)
 }
 
 // WorkspaceRepository 定義本地工作區管理的介面 (Port)
@@ -201,8 +202,10 @@ func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
 }
 
 func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, expectedGitLabUsername string, onSuccess func(string)) {
+	assigned := false
 	for _, w := range s.workerManager.Workers {
 		if w.Config.ID == agentID {
+			assigned = true
 			if w.Config.Workspace != localPath {
 				slog.Info("Switching worker workspace", "worker_id", agentID, "from", w.Config.Workspace, "to", localPath)
 				w.Stop()
@@ -218,6 +221,9 @@ func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, lo
 			})
 			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}
+	}
+	if !assigned {
+		slog.Warn("No worker matched requested agent", "agent_id", agentID, "mr_iid", mr.IID)
 	}
 }
 
@@ -250,7 +256,7 @@ func (s *OrchestratorService) getLatestBotNoteState(ctx context.Context, repo Gi
 	return latestID, botUsername, nil
 }
 
-func (s *OrchestratorService) handleWorkerSuccess(ctx context.Context, repo GitLabRepository, agentID string, todoID int, projectPath string, mr MergeRequest, botUsername string, previousNoteID int) error {
+func (s *OrchestratorService) verifyWorkerCompletion(ctx context.Context, repo GitLabRepository, agentID string, projectPath string, mr MergeRequest, botUsername string, previousNoteID int) error {
 	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
 	if err != nil {
 		return fmt.Errorf("fetch MR notes failed: %w", err)
@@ -270,11 +276,69 @@ func (s *OrchestratorService) handleWorkerSuccess(ctx context.Context, repo GitL
 	if !isValidCompletionNote(agentID, latestBody) {
 		return fmt.Errorf("latest bot MR note is not a valid completion note for agent %q", agentID)
 	}
+	return nil
+}
+
+func (s *OrchestratorService) handleWorkerSuccess(ctx context.Context, repo GitLabRepository, agentID string, todoID int, projectPath string, mr MergeRequest, botUsername string, previousNoteID int) error {
+	if err := s.verifyWorkerCompletion(ctx, repo, agentID, projectPath, mr, botUsername, previousNoteID); err != nil {
+		return err
+	}
 	if err := repo.MarkTodoAsDone(ctx, todoID); err != nil {
 		return fmt.Errorf("mark todo done failed: %w", err)
 	}
-	slog.Info("Detected bot MR note and marked todo as done", "todo_id", todoID, "mr_iid", mr.IID, "project", projectPath, "note_id", latestID)
+	slog.Info("Detected bot MR note and marked todo as done", "todo_id", todoID, "mr_iid", mr.IID, "project", projectPath)
 	return nil
+}
+
+func (s *OrchestratorService) AssignMergeRequestForAgent(ctx context.Context, agentID string, repo GitLabRepository, projectPath string, mr MergeRequest) error {
+	if s.workerManager == nil {
+		return fmt.Errorf("worker manager is required for manual assignment")
+	}
+	if strings.ToLower(mr.State) != "opened" {
+		return fmt.Errorf("merge request is not opened: %s", mr.State)
+	}
+	if s.isWorkerBusy(agentID) {
+		return fmt.Errorf("worker %q is busy", agentID)
+	}
+	if s.checkCISuccess {
+		pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
+		if err != nil {
+			return fmt.Errorf("fetch pipelines failed: %w", err)
+		}
+		if len(pipelines) > 0 && pipelines[0].Status != "success" {
+			return fmt.Errorf("latest pipeline is not successful: %s", pipelines[0].Status)
+		}
+	}
+
+	localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
+	if err != nil {
+		return fmt.Errorf("find local workspace failed: %w", err)
+	}
+
+	expectedGitLabUsername := ""
+	if agentID == agentIDCoder {
+		expectedGitLabUsername, err = repo.GetUsername(ctx)
+		if err != nil {
+			return fmt.Errorf("get username for agent %q failed: %w", agentID, err)
+		}
+	}
+
+	latestBotNoteID, botUsername, err := s.getLatestBotNoteState(ctx, repo, projectPath, mr.IID)
+	if err != nil {
+		return fmt.Errorf("inspect current MR notes failed: %w", err)
+	}
+
+	resultCh := make(chan error, 1)
+	s.assignToWorker(agentID, mr, localPath, expectedGitLabUsername, func(_ string) {
+		resultCh <- s.verifyWorkerCompletion(ctx, repo, agentID, projectPath, mr, botUsername, latestBotNoteID)
+	})
+
+	select {
+	case err := <-resultCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // mrNeedsCoderFix 判斷 MR 上是否有 reviewer 明確「要求修正」的審查結論，作為 coder 派工的守門條件。

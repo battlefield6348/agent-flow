@@ -94,3 +94,20 @@ func (r *HttpGitLabRepository) FetchMergeRequestNotes(ctx context.Context, proje
 	}
 	return notes, nil
 }
+
+func (r *HttpGitLabRepository) FetchMergeRequest(ctx context.Context, projectPath string, mrIID int) (*MergeRequest, error) {
+	rawMR, err := r.client.FetchMergeRequest(ctx, projectPath, mrIID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MergeRequest{
+		IID:         rawMR.IID,
+		Title:       rawMR.Title,
+		Description: rawMR.Description,
+		SHA:         rawMR.SHA,
+		WebURL:      rawMR.WebURL,
+		State:       rawMR.State,
+		Author:      rawMR.Author.Username,
+	}, nil
+}

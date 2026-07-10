@@ -644,6 +644,24 @@ func (m *WorkerManager) StartAll() {
 	}
 }
 
+func (m *WorkerManager) StartByID(workerID string) bool {
+	for _, w := range m.Workers {
+		if w.Config.ID == workerID {
+			w.Start()
+			return true
+		}
+	}
+	return false
+}
+
+func (m *WorkerManager) StopByID(workerID string) {
+	for _, w := range m.Workers {
+		if w.Config.ID == workerID {
+			w.Stop()
+		}
+	}
+}
+
 func (m *WorkerManager) StopAll() {
 	for _, w := range m.Workers {
 		w.Stop()
