@@ -1,5 +1,7 @@
 package orchestrator
 
+import "time"
+
 // MergeRequest 代表 GitLab 中的合併請求領域模型
 type MergeRequest struct {
 	IID         int
@@ -26,7 +28,9 @@ type Pipeline struct {
 }
 
 type Note struct {
-	ID     int
-	Body   string
-	Author string
+	ID        int
+	Body      string
+	Author    string
+	System    bool
+	CreatedAt time.Time
 }

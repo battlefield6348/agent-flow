@@ -51,9 +51,11 @@ type UserDTO struct {
 }
 
 type NoteDTO struct {
-	ID     int    `json:"id"`
-	Body   string `json:"body"`
-	Author struct {
+	ID        int       `json:"id"`
+	Body      string    `json:"body"`
+	System    bool      `json:"system"`
+	CreatedAt time.Time `json:"created_at"`
+	Author    struct {
 		Username string `json:"username"`
 	} `json:"author"`
 }

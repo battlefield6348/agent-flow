@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 type MockGitLabRepository struct {
@@ -284,6 +285,53 @@ func TestOrchestratorService_CoderGate_MarksDoneWhenReviewApprovedNoFix(t *testi
 	}
 	if len(gl.DoneTodoIDs) != 1 || gl.DoneTodoIDs[0] != 9 {
 		t.Fatalf("預期核准（無需修改）時 coder todo 被標 done，實際 %v", gl.DoneTodoIDs)
+	}
+}
+
+func TestOrchestratorService_ReviewerDedupe_MarksDoneWhenLatestReviewStillMatchesCurrentDiff(t *testing.T) {
+	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	gl := &MockGitLabRepository{
+		Todos: []Todo{
+			{ID: 10, Project: "group/project", MergeRequest: MergeRequest{IID: 101, State: "opened", Author: "author1"}},
+		},
+		Notes: []Note{
+			{ID: 1, System: true, Body: "added 1 commit", CreatedAt: base},
+			{ID: 2, Author: "mockuser", Body: "## 審查結論\n✅ 核准", CreatedAt: base.Add(1 * time.Minute)},
+			{ID: 3, Author: "author1", Body: "@mockuser", CreatedAt: base.Add(2 * time.Minute)},
+		},
+	}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, nil)
+
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+	if err != nil {
+		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+	}
+	if len(gl.DoneTodoIDs) != 1 || gl.DoneTodoIDs[0] != 10 {
+		t.Fatalf("預期同一 diff 的重複 reviewer todo 被標 done，實際 %v", gl.DoneTodoIDs)
+	}
+}
+
+func TestOrchestratorService_ReviewerDedupe_AllowsRereviewAfterNewCommit(t *testing.T) {
+	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	gl := &MockGitLabRepository{
+		Todos: []Todo{
+			{ID: 11, Project: "group/project", MergeRequest: MergeRequest{IID: 101, State: "opened", Author: "author1"}},
+		},
+		Notes: []Note{
+			{ID: 1, System: true, Body: "added 1 commit", CreatedAt: base},
+			{ID: 2, Author: "mockuser", Body: "## 審查結論\n🔧 需修改後再審", CreatedAt: base.Add(1 * time.Minute)},
+			{ID: 3, System: true, Body: "added 1 commit", CreatedAt: base.Add(2 * time.Minute)},
+			{ID: 4, Author: "author1", Body: "@mockuser", CreatedAt: base.Add(3 * time.Minute)},
+		},
+	}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, nil)
+
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+	if err != nil {
+		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+	}
+	if len(gl.DoneTodoIDs) != 0 {
+		t.Fatalf("預期新 commit 後允許 re-review，不應在守門階段標 done，實際 %v", gl.DoneTodoIDs)
 	}
 }
 

@@ -118,6 +118,19 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			}
 		}
 
+		if agentID == agentIDReviewer {
+			alreadyHandled, err := s.reviewerTodoAlreadyHandled(ctx, repo, projectPath, mr.IID)
+			if err != nil {
+				slog.Error("Failed to inspect MR notes for reviewer dedupe", "project", projectPath, "mr_iid", mr.IID, "error", err)
+				continue
+			}
+			if alreadyHandled {
+				slog.Info("Reviewer todo already covered by latest review on current diff; marking done", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath)
+				_ = repo.MarkTodoAsDone(ctx, todo.ID)
+				continue
+			}
+		}
+
 		// 檢查 CI 狀態
 		if s.checkCISuccess {
 			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
@@ -282,6 +295,44 @@ func (s *OrchestratorService) mrNeedsCoderFix(ctx context.Context, repo GitLabRe
 		}
 	}
 	return false, nil
+}
+
+// reviewerTodoAlreadyHandled 判斷 reviewer pending todo 是否只是重複 @mention。
+// 規則：若目前 MR 上已存在一則有效 reviewer 審查結論，且在那之後沒有新的 commit system note，
+// 就視為「當前 diff 已被審過」，新的 reviewer todo 直接標 done，避免同一個 SHA 重複審查。
+func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, repo GitLabRepository, projectPath string, mrIID int) (bool, error) {
+	botUsername, err := repo.GetUsername(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get bot username failed: %w", err)
+	}
+
+	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	if err != nil {
+		return false, fmt.Errorf("fetch MR notes failed: %w", err)
+	}
+
+	var latestReviewAt time.Time
+	var latestCommitAt time.Time
+	for _, note := range notes {
+		body := strings.TrimSpace(note.Body)
+		if note.Author == botUsername && isValidCompletionNote(agentIDReviewer, body) && note.CreatedAt.After(latestReviewAt) {
+			latestReviewAt = note.CreatedAt
+		}
+		if note.System && isCommitSystemNote(body) && note.CreatedAt.After(latestCommitAt) {
+			latestCommitAt = note.CreatedAt
+		}
+	}
+
+	if latestReviewAt.IsZero() {
+		return false, nil
+	}
+
+	return !latestCommitAt.After(latestReviewAt), nil
+}
+
+func isCommitSystemNote(body string) bool {
+	body = strings.TrimSpace(body)
+	return strings.HasPrefix(body, "added ") && strings.Contains(body, " commit")
 }
 
 // isValidCompletionNote 依角色判斷該 collaborator 貼出的最新留言是否為「有效的最終產出」，

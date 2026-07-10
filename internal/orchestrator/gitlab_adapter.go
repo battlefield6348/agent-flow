@@ -85,9 +85,11 @@ func (r *HttpGitLabRepository) FetchMergeRequestNotes(ctx context.Context, proje
 	var notes []Note
 	for _, rn := range rawNotes {
 		notes = append(notes, Note{
-			ID:     rn.ID,
-			Body:   rn.Body,
-			Author: rn.Author.Username,
+			ID:        rn.ID,
+			Body:      rn.Body,
+			Author:    rn.Author.Username,
+			System:    rn.System,
+			CreatedAt: rn.CreatedAt,
 		})
 	}
 	return notes, nil
