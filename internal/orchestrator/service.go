@@ -8,12 +8,21 @@ import (
 	"time"
 )
 
+// collaborator 角色 id。必須與 configs/config.yaml 內 collaborators[].id 完全一致，
+// 否則指令產生、完成判定、final-response 解析都會靜默退回泛用行為。
+const (
+	agentIDReviewer = "reviewer"
+	agentIDCoder    = "coder"
+)
+
 // GitLabRepository 定義與 GitLab 交互的介面 (Port)
 type GitLabRepository interface {
 	FetchPendingTodos(ctx context.Context) ([]Todo, error)
 	MarkTodoAsDone(ctx context.Context, todoID int) error
 	GetUsername(ctx context.Context) (string, error)
 	FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error)
+	FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error)
+	FetchMergeRequest(ctx context.Context, projectPath string, mrIID int) (*MergeRequest, error)
 }
 
 // WorkspaceRepository 定義本地工作區管理的介面 (Port)
@@ -56,6 +65,14 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 	slog.Info("Pending Todos found", "agent_id", agentID, "count", len(todos))
 
+	expectedGitLabUsername := ""
+	if agentID == agentIDCoder {
+		expectedGitLabUsername, err = repo.GetUsername(ctx)
+		if err != nil {
+			return fmt.Errorf("get username for agent %q failed: %w", agentID, err)
+		}
+	}
+
 	for _, todo := range todos {
 		mr := todo.MergeRequest
 		projectPath := todo.Project
@@ -83,6 +100,36 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 		if s.workerManager != nil && s.isWorkerBusy(agentID) {
 			slog.Info("Worker is busy, postponing MR", "worker_id", agentID, "mr_iid", mr.IID)
 			continue
+		}
+
+		// coder 守門：coder 身分＝使用者本人，任何在白名單專案內 @mention/assign 到本帳號的 todo
+		// 都會落到這裡。只有當 MR 上已存在 reviewer 的「## 審查結論」留言時，才代表這是「請 coder 修正
+		// 審查意見」的 todo，值得指派。否則（他人 @ 提及、尚無審查等）直接把 todo 標 done，
+		// 避免 coder 產不出「## 修正回覆」而每輪無限重跑，也避免在使用者本人帳號上做非預期的自動修改。
+		if agentID == agentIDCoder {
+			needsFix, err := s.mrNeedsCoderFix(ctx, repo, projectPath, mr.IID)
+			if err != nil {
+				slog.Error("Failed to inspect MR notes for coder gate", "project", projectPath, "mr_iid", mr.IID, "error", err)
+				continue
+			}
+			if !needsFix {
+				slog.Info("Coder todo has no reviewer request for changes; marking done to avoid rerun", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath)
+				_ = repo.MarkTodoAsDone(ctx, todo.ID)
+				continue
+			}
+		}
+
+		if agentID == agentIDReviewer {
+			alreadyHandled, err := s.reviewerTodoAlreadyHandled(ctx, repo, todo)
+			if err != nil {
+				slog.Error("Failed to inspect MR notes for reviewer dedupe", "project", projectPath, "mr_iid", mr.IID, "error", err)
+				continue
+			}
+			if alreadyHandled {
+				slog.Info("Reviewer todo already covered by latest review on current diff; marking done", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "action_name", todo.ActionName)
+				_ = repo.MarkTodoAsDone(ctx, todo.ID)
+				continue
+			}
 		}
 
 		// 檢查 CI 狀態
@@ -113,8 +160,17 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
 		if s.workerManager != nil {
-			s.assignToWorker(agentID, mr, localPath)
-			_ = repo.MarkTodoAsDone(ctx, todo.ID)
+			latestBotNoteID, botUsername, err := s.getLatestBotNoteState(ctx, repo, projectPath, mr.IID)
+			if err != nil {
+				slog.Error("Failed to inspect current MR notes before assignment", "project", projectPath, "mr_iid", mr.IID, "error", err)
+				continue
+			}
+
+			s.assignToWorker(agentID, mr, localPath, expectedGitLabUsername, func(_ string) {
+				if err := s.handleWorkerSuccess(ctx, repo, agentID, todo.ID, projectPath, mr, botUsername, latestBotNoteID); err != nil {
+					slog.Error("Failed to finalize worker result", "todo_id", todo.ID, "mr_iid", mr.IID, "error", err)
+				}
+			})
 		} else {
 			slog.Info("Mock mode: task assignment", "agent_id", agentID, "mr_iid", mr.IID, "workspace", localPath)
 		}
@@ -145,9 +201,11 @@ func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
 	return false
 }
 
-func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string) {
+func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, expectedGitLabUsername string, onSuccess func(string)) {
+	assigned := false
 	for _, w := range s.workerManager.Workers {
 		if w.Config.ID == agentID {
+			assigned = true
 			if w.Config.Workspace != localPath {
 				slog.Info("Switching worker workspace", "worker_id", agentID, "from", w.Config.Workspace, "to", localPath)
 				w.Stop()
@@ -155,19 +213,217 @@ func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, lo
 				w.Start()
 				time.Sleep(15 * time.Second)
 			}
-			var actionName string
-			if agentID == "reviewer" {
-				actionName = "評審"
-			} else {
-				actionName = "處理"
-			}
-			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
-			if w.Config.PromptSuffix != "" {
-				instruction += w.Config.PromptSuffix
-			}
-			instruction += "\n"
-			w.SendInput(instruction)
+			instruction := buildWorkerInstruction(agentID, mr)
+			w.SendTask(WorkerTask{
+				Text:                   instruction,
+				ExpectedGitLabUsername: expectedGitLabUsername,
+				OnSuccess:              onSuccess,
+			})
 			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}
+	}
+	if !assigned {
+		slog.Warn("No worker matched requested agent", "agent_id", agentID, "mr_iid", mr.IID)
+	}
+}
+
+func buildWorkerInstruction(agentID string, mr MergeRequest) string {
+	switch agentID {
+	case agentIDReviewer:
+		return fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s\n請直接在 GitLab 的 Merge Request 留言張貼最終審查內容；不要貼思考過程、操作 transcript、狀態列或工具輸出。留言完成後，再把相同的最終審查內容輸出到終端。\n", mr.IID, mr.WebURL)
+	case agentIDCoder:
+		return fmt.Sprintf("請處理 Merge Request %d 上的最新審查意見。網址為：%s\n請讀取該 MR 上最新一則以「## 審查結論」開頭的審查留言，逐項修正其中的必修問題，並將修正 push 到該 MR 的同一個來源分支（不要另開新分支或新 MR）。完成後，在該 MR 留一則以「## 修正回覆」開頭的留言，逐項說明每條必修問題如何處理；不要貼思考過程、操作 transcript、狀態列或工具輸出。留言完成後，再把相同的最終內容輸出到終端。\n", mr.IID, mr.WebURL)
+	}
+	return fmt.Sprintf("請開始處理 Merge Request %d。網址為：%s\n", mr.IID, mr.WebURL)
+}
+
+func (s *OrchestratorService) getLatestBotNoteState(ctx context.Context, repo GitLabRepository, projectPath string, mrIID int) (int, string, error) {
+	botUsername, err := repo.GetUsername(ctx)
+	if err != nil {
+		return 0, "", fmt.Errorf("get bot username failed: %w", err)
+	}
+	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	if err != nil {
+		return 0, "", fmt.Errorf("fetch MR notes failed: %w", err)
+	}
+
+	latestID := 0
+	for _, note := range notes {
+		if note.Author == botUsername && note.ID > latestID {
+			latestID = note.ID
+		}
+	}
+	return latestID, botUsername, nil
+}
+
+func (s *OrchestratorService) verifyWorkerCompletion(ctx context.Context, repo GitLabRepository, agentID string, projectPath string, mr MergeRequest, botUsername string, previousNoteID int) error {
+	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+	if err != nil {
+		return fmt.Errorf("fetch MR notes failed: %w", err)
+	}
+
+	latestID := previousNoteID
+	latestBody := ""
+	for _, note := range notes {
+		if note.Author == botUsername && note.ID > latestID {
+			latestID = note.ID
+			latestBody = strings.TrimSpace(note.Body)
+		}
+	}
+	if latestID == previousNoteID {
+		return fmt.Errorf("no new bot MR note detected")
+	}
+	if !isValidCompletionNote(agentID, latestBody) {
+		return fmt.Errorf("latest bot MR note is not a valid completion note for agent %q", agentID)
+	}
+	return nil
+}
+
+func (s *OrchestratorService) handleWorkerSuccess(ctx context.Context, repo GitLabRepository, agentID string, todoID int, projectPath string, mr MergeRequest, botUsername string, previousNoteID int) error {
+	if err := s.verifyWorkerCompletion(ctx, repo, agentID, projectPath, mr, botUsername, previousNoteID); err != nil {
+		return err
+	}
+	if err := repo.MarkTodoAsDone(ctx, todoID); err != nil {
+		return fmt.Errorf("mark todo done failed: %w", err)
+	}
+	slog.Info("Detected bot MR note and marked todo as done", "todo_id", todoID, "mr_iid", mr.IID, "project", projectPath)
+	return nil
+}
+
+func (s *OrchestratorService) AssignMergeRequestForAgent(ctx context.Context, agentID string, repo GitLabRepository, projectPath string, mr MergeRequest) error {
+	if s.workerManager == nil {
+		return fmt.Errorf("worker manager is required for manual assignment")
+	}
+	if strings.ToLower(mr.State) != "opened" {
+		return fmt.Errorf("merge request is not opened: %s", mr.State)
+	}
+	if s.isWorkerBusy(agentID) {
+		return fmt.Errorf("worker %q is busy", agentID)
+	}
+	if s.checkCISuccess {
+		pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
+		if err != nil {
+			return fmt.Errorf("fetch pipelines failed: %w", err)
+		}
+		if len(pipelines) > 0 && pipelines[0].Status != "success" {
+			return fmt.Errorf("latest pipeline is not successful: %s", pipelines[0].Status)
+		}
+	}
+
+	localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
+	if err != nil {
+		return fmt.Errorf("find local workspace failed: %w", err)
+	}
+
+	expectedGitLabUsername := ""
+	if agentID == agentIDCoder {
+		expectedGitLabUsername, err = repo.GetUsername(ctx)
+		if err != nil {
+			return fmt.Errorf("get username for agent %q failed: %w", agentID, err)
+		}
+	}
+
+	latestBotNoteID, botUsername, err := s.getLatestBotNoteState(ctx, repo, projectPath, mr.IID)
+	if err != nil {
+		return fmt.Errorf("inspect current MR notes failed: %w", err)
+	}
+
+	resultCh := make(chan error, 1)
+	s.assignToWorker(agentID, mr, localPath, expectedGitLabUsername, func(_ string) {
+		resultCh <- s.verifyWorkerCompletion(ctx, repo, agentID, projectPath, mr, botUsername, latestBotNoteID)
+	})
+
+	select {
+	case err := <-resultCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// mrNeedsCoderFix 判斷 MR 上是否有 reviewer 明確「要求修正」的審查結論，作為 coder 派工的守門條件。
+// 僅「存在審查結論」還不夠——若結論是核准或僅待作者說明（無必修問題），指派 coder 會因無事可修而
+// 產不出「## 修正回覆」、導致 todo 每輪重跑。因此收緊為：必須有以「## 審查結論」（或舊版「### 結論」）
+// 開頭、且結論明確標示「需修改後再審」的留言，才放行；否則直接標 done，避免誤觸發與無限重跑。
+func (s *OrchestratorService) mrNeedsCoderFix(ctx context.Context, repo GitLabRepository, projectPath string, mrIID int) (bool, error) {
+	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	if err != nil {
+		return false, fmt.Errorf("fetch MR notes failed: %w", err)
+	}
+	for _, note := range notes {
+		body := strings.TrimSpace(note.Body)
+		if strings.HasPrefix(body, "## 審查結論") || strings.HasPrefix(body, "### 結論") {
+			if strings.Contains(body, "需修改後再審") {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// reviewerTodoAlreadyHandled 判斷 reviewer pending todo 是否只是同一個 diff 上的殘留待辦。
+// 規則：若目前 MR 上已存在一則有效 reviewer 審查結論，且在那之後沒有新的 commit system note，
+// 通常視為「當前 diff 已被審過」。但如果這筆 todo 本身就是新的 @mention / assign，
+// 代表有人明確要求 reviewer 再看一次，這種情況應放行而非直接吃掉。
+func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, repo GitLabRepository, todo Todo) (bool, error) {
+	botUsername, err := repo.GetUsername(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get bot username failed: %w", err)
+	}
+
+	notes, err := repo.FetchMergeRequestNotes(ctx, todo.Project, todo.MergeRequest.IID)
+	if err != nil {
+		return false, fmt.Errorf("fetch MR notes failed: %w", err)
+	}
+
+	var latestReviewAt time.Time
+	var latestCommitAt time.Time
+	for _, note := range notes {
+		body := strings.TrimSpace(note.Body)
+		if note.Author == botUsername && isValidCompletionNote(agentIDReviewer, body) && note.CreatedAt.After(latestReviewAt) {
+			latestReviewAt = note.CreatedAt
+		}
+		if note.System && isCommitSystemNote(body) && note.CreatedAt.After(latestCommitAt) {
+			latestCommitAt = note.CreatedAt
+		}
+	}
+
+	if latestReviewAt.IsZero() {
+		return false, nil
+	}
+	if reviewerTodoRequestsExplicitRereview(todo.ActionName) {
+		return false, nil
+	}
+
+	return !latestCommitAt.After(latestReviewAt), nil
+}
+
+func isCommitSystemNote(body string) bool {
+	body = strings.TrimSpace(body)
+	return strings.HasPrefix(body, "added ") && strings.Contains(body, " commit")
+}
+
+func reviewerTodoRequestsExplicitRereview(actionName string) bool {
+	switch strings.ToLower(strings.TrimSpace(actionName)) {
+	case "mentioned", "assigned", "directly_addressed":
+		return true
+	default:
+		return false
+	}
+}
+
+// isValidCompletionNote 依角色判斷該 collaborator 貼出的最新留言是否為「有效的最終產出」，
+// 只有有效時才會把對應 todo 標記為 done。不同角色的留言格式不同：
+//   - reviewer：以「## 審查結論」（或舊版「### 結論」）開頭的結構化審查
+//   - coder：以「## 修正回覆」開頭、逐項回應審查意見的修正說明
+//
+// 這可避免 CLI 把 TUI 畫面、狀態列或 transcript 當成留言時被誤判為完成。
+func isValidCompletionNote(agentID, body string) bool {
+	body = strings.TrimSpace(body)
+	switch agentID {
+	case agentIDCoder:
+		return strings.HasPrefix(body, "## 修正回覆")
+	default:
+		return strings.HasPrefix(body, "## 審查結論") || strings.HasPrefix(body, "### 結論")
 	}
 }

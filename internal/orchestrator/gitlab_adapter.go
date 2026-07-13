@@ -74,3 +74,40 @@ func (r *HttpGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, p
 	}
 	return pipelines, nil
 }
+
+// FetchMergeRequestNotes 取得特定 MR 的留言列表
+func (r *HttpGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
+	rawNotes, err := r.client.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	if err != nil {
+		return nil, err
+	}
+
+	var notes []Note
+	for _, rn := range rawNotes {
+		notes = append(notes, Note{
+			ID:        rn.ID,
+			Body:      rn.Body,
+			Author:    rn.Author.Username,
+			System:    rn.System,
+			CreatedAt: rn.CreatedAt,
+		})
+	}
+	return notes, nil
+}
+
+func (r *HttpGitLabRepository) FetchMergeRequest(ctx context.Context, projectPath string, mrIID int) (*MergeRequest, error) {
+	rawMR, err := r.client.FetchMergeRequest(ctx, projectPath, mrIID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MergeRequest{
+		IID:         rawMR.IID,
+		Title:       rawMR.Title,
+		Description: rawMR.Description,
+		SHA:         rawMR.SHA,
+		WebURL:      rawMR.WebURL,
+		State:       rawMR.State,
+		Author:      rawMR.Author.Username,
+	}, nil
+}

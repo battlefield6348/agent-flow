@@ -1,30 +1,149 @@
+# ============================================================================
+# agent-flow 設定範例（config.yaml.example）
+#
+# 三個最關鍵的啟動步驟：
+#   1. 先把本檔複製成正式設定：  cp configs/config.yaml.example configs/config.yaml
+#   2. 填好每個 collaborator 的 gitlab_token，以及 scheduler 的白名單
+#      （allowed_projects 要填「完整命名空間路徑」，見下方說明，這是最常填錯的地方）。
+#   3. 確認 bot 已被「其他人」加成 MR 的 Reviewer（或在 MR 留言 @ 這個 bot）——
+#      GitLab 不會為你自己的動作建立 todo，沒有這一步就永遠掃不到任何 MR。
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# 日誌設定
+# ---------------------------------------------------------------------------
 logs:
+  # 日誌輸出目錄。留空或未設時程式預設為 "./logs"。
   path: "./logs"
 
-# 定時任務排程設定
+# ---------------------------------------------------------------------------
+# 排程 / 掃描設定
+# ---------------------------------------------------------------------------
 scheduler:
+  # 輪詢間隔秒數。設 <= 0（或未設）時程式預設為 60 秒。
   interval_seconds: 120
-  gitlab_url: "https://gitlab.example.com"
-  # 可自訂只掃描指定的 GitLab 專案白名單以避免掃描非自己維護的專案
-  # 留空則代表掃描所有專案
-  allowed_projects:
-    - "your-group/your-project"
-  # 可自訂只掃描指定使用者建立的 MR 以防多人開發時被不相關的 MR 觸發
-  # 留空則代表掃描所有使用者建立的 MR
-  allowed_mr_authors:
-    - "your_username"
 
+  # GitLab 站台網址。
+  gitlab_url: "https://gitlab.example.com"
+
+  # 是否要求 MR 的最新 pipeline 通過才派工。選填，未設時「預設為 true」。
+  #   true （預設）：MR 最新一次 pipeline 狀態必須是 success 才會派工；
+  #                  若該 MR 完全沒有任何 pipeline，則直接放行；
+  #                  狀態非 success（failed / running / pending…）者會被跳過。
+  #   false        ：完全關閉 CI 檢查，不管 pipeline 狀態一律派工。
+  check_ci_success: true
+
+  # 專案白名單（字串陣列）。留空 [] 代表掃描所有專案。
+  #
+  # ★★★ 最容易填錯的欄位，請務必看清楚 ★★★
+  #   比對對象是 GitLab 的 path_with_namespace「完整命名空間路徑」，
+  #   也就是 MR 網址裡 /-/merge_requests/ 前面那一整段（含所有 group / subgroup）。
+  #   比對方式是「轉小寫後完全相等」，不是包含、也不是專案短名。
+  #   ✗ 錯誤：只填專案短名  admin-api-service
+  #   ✓ 正確：填斜線分隔的完整路徑，例如：
+  #           htsprout/employee-health-smart-manager/admin-api-service
+  allowed_projects:
+    - "your-group/your-subgroup/your-project"
+
+  # MR 作者白名單（字串陣列）。留空 [] 代表不限作者。
+  #   比對對象是作者的 GitLab username（帳號），不是顯示名稱（name）。
+  allowed_mr_authors:
+    - "your_gitlab_username"
+
+# ---------------------------------------------------------------------------
+# 協作者（AI CLI）設定
+#
+# 每個 collaborator 代表一個獨立的 AI CLI 進程。系統會用它專屬的 gitlab_token
+# 去呼叫 GitLab Todos API 抓待辦；Todos API 只會回傳「該 token 所屬帳號自己的待辦」，
+# 所以務必先讓別人把這個 bot 帳號加成 Reviewer 或在 MR 上 @ 它，才會產生 todo。
+# ---------------------------------------------------------------------------
 collaborators:
+  # 調整原則（建議保留在正式 config 附近參考）：
+  #   - reviewer：通常配 git-mr-workflow-reviewer，工作目錄指向「被 review 的專案 clone」。
+  #   - coder   ：通常配 git-mr-workflow-coder，工作目錄指向「要修改程式的專案 clone」。
+  #   - Claude  ：args 幾乎一定要含 --dangerously-skip-permissions，否則會卡互動式確認。
+  #   - Codex   ：通常 args 可留 []；若你自行加額外旗標，請先確認仍可非互動執行。
+  #   - agy     ：通常 args 可留 []；skills 需真的存在於 ~/.gemini/antigravity/skills/ 才會生效。
+  #   - only_final_response：
+  #       reviewer / coder 多半建議先維持 false，方便保留較完整的終端輸出做除錯；
+  #       若你的 CLI 已穩定只輸出乾淨 final answer，再考慮改 true。
+  #   - prompt_suffix：
+  #       適合放「所有任務都固定要遵守」的補充要求，例如完成後要 @ 誰、要不要貼測試摘要；
+  #       不適合放會因單一 MR/任務而變動的內容。
+  #   - id：
+  #       會直接成為 tmux session 名稱；若你在多個專案同時跑 agent-flow，請自行加專案前綴避免撞名，
+  #       例如 reviewer-admin-api / reviewer-app-api，而不要每個專案都只叫 reviewer。
+
+  # --- 範例一：審查者（Reviewer），使用 Claude Code CLI ---
   - id: "reviewer"
-    name: "架構評審 (Reviewer)"
-    gitlab_token: "your_reviewer_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
-    cmd: "agy"
-    args: []
+    # id 會被「直接拿來當 tmux session 名稱」。
+    # 已知限制：多專案並行時，不同專案的 config 必須使用「不同的 id」，
+    # 否則會互相砍掉對方的 tmux session。
+
+    name: "架構評審 (Reviewer)"    # 顯示名稱，給人看的。
+
+    # 該協作者「專屬」的 GitLab Personal Access Token（PAT）。
+    # 系統用此 token 呼叫 Todos API，故只會抓到此 token 所屬帳號的待辦。
+    # 該 token 需要對目標專案有讀取權限。請填入真實 token，勿使用此佔位字串。
+    gitlab_token: "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+    # 要執行的 AI CLI 指令名稱或絕對路徑。已驗證可用：
+    #   claude → Claude Code CLI
+    #   codex  → Codex CLI
+    #   agy    → Antigravity CLI（底層為 Gemini）
+    cmd: "claude"
+
+    # 傳給 CLI 的額外參數（字串陣列）。
+    # ★ Claude Code CLI 若要在無人看管下自主執行，必須加 --dangerously-skip-permissions，
+    #   否則每個指令都會停下來等人按確認。
+    #   （首次啟動的「接受責任」畫面已由程式的就緒偵測處理，不需擔心。）
+    # 其他常見 CLI 的建議：
+    #   codex → 多半可留 []
+    #   agy   → 多半可留 []
+    args: ["--dangerously-skip-permissions"]
+
+    # 技能名稱陣列。技能目錄依 CLI 而異：claude/codex 讀 ~/.agent-flow/skills/<技能名>/，
+    # agy 讀 ~/.gemini/antigravity/skills/<技能名>/；只有實際存在的技能才會被載入。
+    # 本專案已內建兩個技能於 repo 的 skills/，換機/新成員請先跑 `make install-skills`，
+    # 它會一次 symlink 到上述所有目錄：
+    #   git-mr-workflow-reviewer（審查用）、git-mr-workflow-coder（開發用）。
+    # 建議：
+    #   reviewer 用 git-mr-workflow-reviewer
+    #   coder    用 git-mr-workflow-coder
     skills: ["git-mr-workflow-reviewer"]
 
+    # 該協作者的工作目錄，必須是「本機（Linux/WSL）真實存在的絕對路徑」，
+    # 通常是要被審查/開發的 git 專案在本地的 clone。
+    # ✗ 不要填 Windows 的 UNC 路徑（如 \\wsl.localhost\...），在 Linux 下無效。
+    workspace: "/home/youruser/path/to/local/clone"
+
+    # 選填：送給 CLI 的每則輸入前會自動加上的前綴字串。
+    # 適合拿來注入固定命令前綴；若沒有明確需求，建議保持空字串。
+    input_prefix: ""
+
+    # 選填：布林值，是否只保留 CLI 的最終回應。
+    # 若 CLI 常輸出大量中間狀態、你又需要靠 logs 排查問題，建議先維持 false。
+    only_final_response: false
+
+    # 選填：附加在待命提示訊息後面的字串。
+    # 適合放跨任務固定要求，例如「完成後 @ 某人」；不要放單次 MR 才需要的內容。
+    prompt_suffix: "並在評審完成後 @ 專案負責人。"
+
+  # --- 範例二：開發者（Coder），使用 Claude Code CLI ---
+  #     coder 會讀取 reviewer 的審查意見、在同一 MR 分支上修正並回覆。
+  #     ★ 身分關鍵：coder 的 gitlab_token 必須是「開發者本人」的 PAT（非 bot）。
+  #       reviewer 於「需修改後再審」時會 @ MR 作者，GitLab 才會替此帳號建立 todo。
   - id: "coder"
     name: "自動編碼 (Coder)"
-    gitlab_token: "your_coder_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
-    cmd: "agy"
-    args: []
-    skills: ["git-mr-workflow-coder"]
+    gitlab_token: "glpat-xxxxxxxxxxxxxxxxxxxx"  # 開發者本人 PAT（bot 會導致留言/push 掛錯身分）
+    cmd: "claude"                      # 也可改 codex / agy；若用 claude 請保留下方 MCP 隔離參數
+    # --strict-mcp-config + 空 MCP 檔：避免 claude 誤用 ~/.claude/.mcp.json 內綁 bot PAT 的
+    # gitlab MCP 貼文（會讓「修正回覆」掛在 bot 名下）。停掉 MCP 後 coder 只走 glab CLI，
+    # glab 採用上面注入的 gitlab_token（=本人）身分才正確。
+    # ★ 路徑請改成「你本機 agent-flow checkout 的絕對路徑」。用 codex/agy 時此兩參數可移除。
+    args: ["--dangerously-skip-permissions", "--strict-mcp-config", "--mcp-config", "/absolute/path/to/agent-flow/configs/coder-mcp.json"]
+    skills: ["git-mr-workflow-coder"]  # 若改成 reviewer 角色，請同步改成 reviewer 技能
+    workspace: "/home/youruser/path/to/local/clone"  # 指向此 agent 實際要修改程式的 repo
+    input_prefix: ""
+    only_final_response: false         # CLI 行為穩定後再視需要改 true
+    prompt_suffix: ""                  # 例如可改成「完成後補一段測試摘要」

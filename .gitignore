@@ -5,6 +5,7 @@
 
 # Configs
 configs/config.yaml
+configs/config.test-*.yaml
 
 # Database
 db/*.db
