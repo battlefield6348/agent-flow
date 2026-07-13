@@ -315,6 +315,52 @@ func TestOrchestratorService_ReviewerDedupe_MarksDoneWhenLatestReviewStillMatche
 	}
 }
 
+func TestOrchestratorService_ReviewerDedupe_AllowsRereviewForExplicitMentionWithoutNewCommit(t *testing.T) {
+	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	gl := &MockGitLabRepository{
+		Todos: []Todo{
+			{ID: 12, ActionName: "mentioned", Project: "group/project", MergeRequest: MergeRequest{IID: 101, State: "opened", Author: "author1"}},
+		},
+		Notes: []Note{
+			{ID: 1, System: true, Body: "added 1 commit", CreatedAt: base},
+			{ID: 2, Author: "mockuser", Body: "## 審查結論\n✅ 核准", CreatedAt: base.Add(1 * time.Minute)},
+			{ID: 3, Author: "author1", Body: "@mockuser 請再 review 一次", CreatedAt: base.Add(2 * time.Minute)},
+		},
+	}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, nil)
+
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+	if err != nil {
+		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+	}
+	if len(gl.DoneTodoIDs) != 0 {
+		t.Fatalf("預期明確的新 mention 可觸發 re-review，不應在守門階段標 done，實際 %v", gl.DoneTodoIDs)
+	}
+}
+
+func TestOrchestratorService_ReviewerDedupe_AllowsRereviewForDirectlyAddressedWithoutNewCommit(t *testing.T) {
+	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	gl := &MockGitLabRepository{
+		Todos: []Todo{
+			{ID: 13, ActionName: "directly_addressed", Project: "group/project", MergeRequest: MergeRequest{IID: 101, State: "opened", Author: "author1"}},
+		},
+		Notes: []Note{
+			{ID: 1, System: true, Body: "added 1 commit", CreatedAt: base},
+			{ID: 2, Author: "mockuser", Body: "## 審查結論\n✅ 核准", CreatedAt: base.Add(1 * time.Minute)},
+			{ID: 3, Author: "author1", Body: "@mockuser reviewer", CreatedAt: base.Add(2 * time.Minute)},
+		},
+	}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, nil)
+
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+	if err != nil {
+		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+	}
+	if len(gl.DoneTodoIDs) != 0 {
+		t.Fatalf("預期 directly_addressed 的 reviewer todo 可觸發 re-review，不應在守門階段標 done，實際 %v", gl.DoneTodoIDs)
+	}
+}
+
 func TestOrchestratorService_ReviewerDedupe_AllowsRereviewAfterNewCommit(t *testing.T) {
 	base := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
 	gl := &MockGitLabRepository{

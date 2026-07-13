@@ -120,13 +120,13 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 		}
 
 		if agentID == agentIDReviewer {
-			alreadyHandled, err := s.reviewerTodoAlreadyHandled(ctx, repo, projectPath, mr.IID)
+			alreadyHandled, err := s.reviewerTodoAlreadyHandled(ctx, repo, todo)
 			if err != nil {
 				slog.Error("Failed to inspect MR notes for reviewer dedupe", "project", projectPath, "mr_iid", mr.IID, "error", err)
 				continue
 			}
 			if alreadyHandled {
-				slog.Info("Reviewer todo already covered by latest review on current diff; marking done", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath)
+				slog.Info("Reviewer todo already covered by latest review on current diff; marking done", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "action_name", todo.ActionName)
 				_ = repo.MarkTodoAsDone(ctx, todo.ID)
 				continue
 			}
@@ -361,16 +361,17 @@ func (s *OrchestratorService) mrNeedsCoderFix(ctx context.Context, repo GitLabRe
 	return false, nil
 }
 
-// reviewerTodoAlreadyHandled 判斷 reviewer pending todo 是否只是重複 @mention。
+// reviewerTodoAlreadyHandled 判斷 reviewer pending todo 是否只是同一個 diff 上的殘留待辦。
 // 規則：若目前 MR 上已存在一則有效 reviewer 審查結論，且在那之後沒有新的 commit system note，
-// 就視為「當前 diff 已被審過」，新的 reviewer todo 直接標 done，避免同一個 SHA 重複審查。
-func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, repo GitLabRepository, projectPath string, mrIID int) (bool, error) {
+// 通常視為「當前 diff 已被審過」。但如果這筆 todo 本身就是新的 @mention / assign，
+// 代表有人明確要求 reviewer 再看一次，這種情況應放行而非直接吃掉。
+func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, repo GitLabRepository, todo Todo) (bool, error) {
 	botUsername, err := repo.GetUsername(ctx)
 	if err != nil {
 		return false, fmt.Errorf("get bot username failed: %w", err)
 	}
 
-	notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	notes, err := repo.FetchMergeRequestNotes(ctx, todo.Project, todo.MergeRequest.IID)
 	if err != nil {
 		return false, fmt.Errorf("fetch MR notes failed: %w", err)
 	}
@@ -390,6 +391,9 @@ func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, re
 	if latestReviewAt.IsZero() {
 		return false, nil
 	}
+	if reviewerTodoRequestsExplicitRereview(todo.ActionName) {
+		return false, nil
+	}
 
 	return !latestCommitAt.After(latestReviewAt), nil
 }
@@ -397,6 +401,15 @@ func (s *OrchestratorService) reviewerTodoAlreadyHandled(ctx context.Context, re
 func isCommitSystemNote(body string) bool {
 	body = strings.TrimSpace(body)
 	return strings.HasPrefix(body, "added ") && strings.Contains(body, " commit")
+}
+
+func reviewerTodoRequestsExplicitRereview(actionName string) bool {
+	switch strings.ToLower(strings.TrimSpace(actionName)) {
+	case "mentioned", "assigned", "directly_addressed":
+		return true
+	default:
+		return false
+	}
 }
 
 // isValidCompletionNote 依角色判斷該 collaborator 貼出的最新留言是否為「有效的最終產出」，
