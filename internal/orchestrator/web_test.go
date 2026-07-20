@@ -34,3 +34,13 @@ func TestWebServerAddsAgent(t *testing.T) {
 		t.Fatalf("settings=%#v err=%v", settings, err)
 	}
 }
+
+func TestDashboardLoadsStoredSettings(t *testing.T) {
+	page, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page), "fetch('/api/settings')") {
+		t.Fatal("dashboard does not load stored settings")
+	}
+}
