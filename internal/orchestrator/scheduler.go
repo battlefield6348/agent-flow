@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -14,6 +16,9 @@ type Scheduler struct {
 	allowedMRAuthors []string
 	collaborators    []CollaboratorConfig
 	gitlabURL        string
+	mu               sync.Mutex
+	ctx              context.Context
+	agentCancels     map[string]context.CancelFunc
 }
 
 func NewScheduler(service *OrchestratorService, interval time.Duration, allowedProjects, allowedAuthors []string, collaborators []CollaboratorConfig, gitlabURL string) *Scheduler {
@@ -24,21 +29,51 @@ func NewScheduler(service *OrchestratorService, interval time.Duration, allowedP
 		allowedMRAuthors: allowedAuthors,
 		collaborators:    collaborators,
 		gitlabURL:        gitlabURL,
+		agentCancels:     make(map[string]context.CancelFunc),
 	}
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
 	slog.Info("Starting multi-agent background scheduler", "agent_count", len(s.collaborators))
-
-	// 初始等待，確保 Worker 有時間初始化
-	time.Sleep(15 * time.Second)
-
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
 	for _, col := range s.collaborators {
+		if err := s.StartAgent(col); err != nil {
+			slog.Error("Failed to start agent polling", "agent_id", col.ID, "error", err)
+		}
+	}
+}
+
+func (s *Scheduler) StartAgent(col CollaboratorConfig) error {
+	s.mu.Lock()
+	if s.ctx == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("scheduler is not started")
+	}
+	if _, exists := s.agentCancels[col.ID]; exists {
+		s.mu.Unlock()
+		return fmt.Errorf("agent %s is already scheduled", col.ID)
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.agentCancels[col.ID] = cancel
+	s.mu.Unlock()
+	if s.service != nil {
 		go s.startPollingForAgent(ctx, col)
 	}
+	return nil
+}
 
-	<-ctx.Done()
-	slog.Info("Stopping background scheduler")
+func (s *Scheduler) Update(settings WorkflowSettings) {
+	s.mu.Lock()
+	s.interval = time.Duration(settings.IntervalSeconds) * time.Second
+	if s.interval <= 0 {
+		s.interval = time.Minute
+	}
+	s.allowedProjects = settings.AllowedProjects
+	s.allowedMRAuthors = settings.AllowedMRAuthors
+	s.gitlabURL = settings.GitLabURL
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorConfig) {

@@ -35,6 +35,8 @@ graph TD
 
 ## 🛠️ 快速啟動
 
+目前的 `configs/config.yaml` 僅設定服務啟動項目：`listen_addr`、`logs.path` 與 `settings_path`。GitLab、輪詢規則與所有 agent 均在服務啟動後透過 `http://127.0.0.1:8080` 設定，並持久化到 `data/settings.yaml`。
+
 ### 1. 系統需求
 *   **Go** 1.21 或以上版本
 *   **tmux** (Linux 系統終端多路復用器)

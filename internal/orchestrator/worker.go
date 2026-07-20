@@ -478,7 +478,10 @@ func (w *Worker) GetSkillPrefix() string {
 }
 
 type WorkerManager struct {
-	Workers []*Worker
+	Workers  []*Worker
+	logDir   string
+	terminal Terminal
+	mu       sync.RWMutex
 }
 
 func NewWorkerManager(configs []CollaboratorConfig, logDir string, terminal Terminal) *WorkerManager {
@@ -486,11 +489,60 @@ func NewWorkerManager(configs []CollaboratorConfig, logDir string, terminal Term
 	for _, cfg := range configs {
 		workers = append(workers, NewWorker(cfg, logDir, terminal))
 	}
-	return &WorkerManager{Workers: workers}
+	return &WorkerManager{Workers: workers, logDir: logDir, terminal: terminal}
+}
+
+type WorkerStatus struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Cmd       string `json:"cmd"`
+	Workspace string `json:"workspace"`
+	Running   bool   `json:"running"`
+	Busy      bool   `json:"busy"`
+}
+
+func (m *WorkerManager) AddAndStart(cfg CollaboratorConfig) error {
+	m.mu.Lock()
+	for _, worker := range m.Workers {
+		if worker.Config.ID == cfg.ID {
+			m.mu.Unlock()
+			return fmt.Errorf("worker %s already exists", cfg.ID)
+		}
+	}
+	worker := NewWorker(cfg, m.logDir, m.terminal)
+	m.Workers = append(m.Workers, worker)
+	m.mu.Unlock()
+	worker.Start()
+	return nil
+}
+
+func (m *WorkerManager) Statuses() []WorkerStatus {
+	m.mu.RLock()
+	workers := append([]*Worker(nil), m.Workers...)
+	m.mu.RUnlock()
+	statuses := make([]WorkerStatus, 0, len(workers))
+	for _, worker := range workers {
+		statuses = append(statuses, WorkerStatus{ID: worker.Config.ID, Name: worker.Config.Name, Cmd: worker.Config.Cmd, Workspace: worker.Config.Workspace, Running: worker.IsRunning(), Busy: worker.IsBusy()})
+	}
+	return statuses
+}
+
+func (m *WorkerManager) Find(id string) *Worker {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, worker := range m.Workers {
+		if worker.Config.ID == id {
+			return worker
+		}
+	}
+	return nil
 }
 
 func (m *WorkerManager) StartAll() {
-	for i, w := range m.Workers {
+	m.mu.RLock()
+	workers := append([]*Worker(nil), m.Workers...)
+	m.mu.RUnlock()
+	for i, w := range workers {
 		if i > 0 {
 			time.Sleep(2 * time.Second)
 		}
@@ -499,7 +551,10 @@ func (m *WorkerManager) StartAll() {
 }
 
 func (m *WorkerManager) StopAll() {
-	for _, w := range m.Workers {
+	m.mu.RLock()
+	workers := append([]*Worker(nil), m.Workers...)
+	m.mu.RUnlock()
+	for _, w := range workers {
 		w.Stop()
 	}
 }

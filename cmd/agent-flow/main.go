@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,50 +22,43 @@ func main() {
 	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
 	flag.Parse()
 
-	cfg, err := orchestrator.LoadConfig(*configPath)
+	cfg, err := orchestrator.LoadStartupConfig(*configPath)
 	if err != nil {
 		slog.Error("Failed to load config", "error", err, "path", *configPath)
 		os.Exit(1)
 	}
 
-	if err := cfg.Validate(); err != nil {
-		slog.Error("Config validation failed", "error", err)
+	logDir := cfg.Logs.Path
+	settings, err := orchestrator.LoadWorkflowSettings(cfg.SettingsPath)
+	if err != nil {
+		slog.Error("Failed to load workflow settings", "error", err)
 		os.Exit(1)
 	}
+	gitlabURL := settings.GitLabURL
 
-	logDir := cfg.Logs.Path
-
-	token := cfg.Collaborators[0].GitLabToken
-	gitlabURL := cfg.Scheduler.GitLabURL
-
-	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, token)
+	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, "")
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
 	terminal := orchestrator.NewTmuxTerminal()
-	workerManager := orchestrator.NewWorkerManager(cfg.Collaborators, logDir, terminal)
+	workerManager := orchestrator.NewWorkerManager(settings.Agents, logDir, terminal)
 
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
-	if cfg.Scheduler.CheckCISuccess != nil {
-		service.SetCheckCISuccess(*cfg.Scheduler.CheckCISuccess)
-	}
-
 	slog.Info("Starting local Workers in tmux...")
 	workerManager.StartAll()
 
-	interval := time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second
-	scheduler := orchestrator.NewScheduler(service, interval, cfg.Scheduler.AllowedProjects, cfg.Scheduler.AllowedMRAuthors, cfg.Collaborators, gitlabURL)
+	interval := time.Duration(settings.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	scheduler := orchestrator.NewScheduler(service, interval, settings.AllowedProjects, settings.AllowedMRAuthors, settings.Agents, gitlabURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if username, err := gitlabRepo.GetUsername(ctx); err == nil {
-		slog.Info("Detected GitLab user", "username", username)
+	scheduler.Start(ctx)
+	slog.Info("Agent Flow web UI is active", "address", cfg.ListenAddr)
+	if err := http.ListenAndServe(cfg.ListenAddr, orchestrator.NewWebServer(cfg.SettingsPath, workerManager, scheduler)); err != nil {
+		slog.Error("Web server stopped", "error", err)
 	}
-
-	go scheduler.Start(ctx)
-
-	slog.Info("Local Review Monitor Mode is ACTIVE. Waiting for GitLab review targets...")
-
-	monitorAnswers(logDir)
 }
 
 func monitorAnswers(logDir string) {

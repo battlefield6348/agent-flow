@@ -1,30 +1,4 @@
+listen_addr: "127.0.0.1:8080"
+settings_path: "data/settings.yaml"
 logs:
   path: "./logs"
-
-# 定時任務排程設定
-scheduler:
-  interval_seconds: 120
-  gitlab_url: "https://gitlab.example.com"
-  # 可自訂只掃描指定的 GitLab 專案白名單以避免掃描非自己維護的專案
-  # 留空則代表掃描所有專案
-  allowed_projects:
-    - "your-group/your-project"
-  # 可自訂只掃描指定使用者建立的 MR 以防多人開發時被不相關的 MR 觸發
-  # 留空則代表掃描所有使用者建立的 MR
-  allowed_mr_authors:
-    - "your_username"
-
-collaborators:
-  - id: "reviewer"
-    name: "架構評審 (Reviewer)"
-    gitlab_token: "your_reviewer_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
-    cmd: "agy"
-    args: []
-    skills: ["git-mr-workflow-reviewer"]
-
-  - id: "coder"
-    name: "自動編碼 (Coder)"
-    gitlab_token: "your_coder_gitlab_token" # 該 AI 協作者在 GitLab 上的專屬 Personal Access Token (PAT)
-    cmd: "agy"
-    args: []
-    skills: ["git-mr-workflow-coder"]
