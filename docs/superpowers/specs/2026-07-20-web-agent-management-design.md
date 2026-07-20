@@ -2,57 +2,42 @@
 
 ## Goal
 
-Run `agent-flow` as a localhost service that shows every agent's state and lets an operator add a persisted agent which joins the worker and scheduling flow immediately.
+Run `agent-flow` as a localhost service that displays every agent and lets an operator configure the scheduler and add persisted agents which join the workflow immediately.
 
-## Scope
+## Configuration Boundary
 
-- Serve one browser page from the Go process on localhost.
-- Show each agent's ID, name, command, workspace, and `running` / `busy` / `idle` state.
-- Accept a new agent's ID, name, command, arguments, skills, workspace, GitLab token, and prompt suffix.
-- Persist agents locally so they are restored at the next service start.
-- Start the new tmux worker and its GitLab polling loop as part of a successful add request.
+`configs/config.yaml` is read only to start the service. It may contain the listen address, log path, and runtime data-file path. It contains no GitLab settings, polling rules, or agent definitions.
 
-The page has no authentication because it binds only to localhost. The GitLab token is stored locally in the same trust boundary as the current YAML configuration.
+`data/settings.yaml` is the sole persisted workflow configuration. It stores the GitLab URL, poll interval, allowed projects, allowed MR authors, and all agent definitions. The UI is the only configuration surface for these values. A new installation starts with an empty settings file and asks the operator to save scheduler settings before adding an agent.
+
+## Localhost UI
+
+The server binds to the configured local address, defaulting to `127.0.0.1:8080`. The page has a scheduler-settings form, an agent-add form, and status cards. Each card shows ID, name, command, workspace, and `running` / `busy` / `idle`; GitLab tokens never appear in API responses or HTML.
+
+Saving scheduler settings updates the in-memory scheduler and persists the complete settings file. Adding an agent validates and persists it, starts its tmux worker, and starts that agent's GitLab polling loop. Restart restores the same settings, workers, and polling loops.
 
 ## Architecture
 
-The scheduler configuration remains in `configs/config.yaml`, but the persisted agent store becomes the sole source of the active agent list. On the first run with no agent-store file, existing `collaborators` from YAML are imported so current deployments retain their agents. Later changes to `collaborators` do not affect the running agent count.
+Use Go's standard `net/http`, embedded HTML/CSS/JavaScript, and the existing YAML dependency. A settings store writes `data/settings.yaml` atomically with owner-only permissions. No database, frontend build system, WebSocket, or authentication is added; the service is local-only and the persisted token file remains within the same local trust boundary as the old configuration.
 
-Use the existing YAML dependency to write a small local agent-store file. The store writes atomically through a temporary file and rename, preventing a partial file after interruption. No database or frontend build system is added.
-
-`WorkerManager` gains synchronized runtime add and read operations. `Scheduler` owns a cancel function per polling loop, allowing a newly added agent to begin scanning immediately without restarting the service. The HTTP server reads this runtime state and returns JSON; the browser uses a small polling request every two seconds rather than WebSockets.
+`WorkerManager` provides synchronized runtime add and status methods. `Scheduler` reads its rules from one synchronized settings snapshot and owns a cancel function for every registered agent loop. The browser polls status every two seconds.
 
 ## HTTP Contract
 
-`GET /api/agents` returns the persisted agent fields plus runtime state.
+- `GET /api/settings` returns scheduler settings without tokens.
+- `PUT /api/settings` validates and persists GitLab URL, interval, and filters, then updates the live scheduler.
+- `GET /api/agents` returns agent configuration without tokens plus runtime state.
+- `POST /api/agents` validates, persists, starts the worker, and registers polling.
+- `GET /` serves the management page.
 
-`POST /api/agents` accepts the agent fields. It rejects missing required fields and duplicate IDs. On success it persists first, creates and starts the worker, starts the polling loop, and returns the new agent state. If startup fails after persistence, the API returns an error and leaves the stored agent available for the next startup.
-
-`GET /` serves the management page. The page renders agent status cards and an add-agent form; it displays request validation errors inline.
-
-## Runtime Flow
-
-```text
-browser POST /api/agents
-  -> validate unique agent
-  -> atomically persist agent list
-  -> WorkerManager.AddAndStart
-  -> Scheduler.StartAgent
-  -> agent tmux worker and GitLab polling loop active
-```
-
-At startup, the process loads the agent store, creates workers for that list, starts them, and starts one polling loop per stored agent. The configured scheduler filters and interval apply to all agents.
-
-## Error Handling and Security
-
-The UI never returns GitLab tokens. API responses omit them. Invalid input, duplicate IDs, persistence failures, and worker startup failures are returned as clear HTTP errors and logged. Binding remains `127.0.0.1`; exposing the service beyond localhost is out of scope because it would require authentication and secure token storage.
+Invalid input returns `400`; duplicate agent IDs return `409`; store and runtime errors return `500` and are logged.
 
 ## Verification
 
-- Unit tests cover first-run YAML import, atomic store round-trip, duplicate-ID rejection, status serialization without tokens, and a runtime-added agent starting its worker and polling loop.
-- Run the focused orchestrator tests, then `go test ./...`, `go vet ./...`, and a local HTTP smoke test against `127.0.0.1`.
+- Unit tests cover startup-config defaults, settings-store round trips, API token omission, duplicate-agent rejection, scheduler updates, and dynamic worker/polling startup.
+- Run focused orchestrator tests, `go vet ./...`, `go test ./...`, and a localhost HTTP smoke test.
 
 ## Deliberate Limits
 
-- The first version only adds and observes agents; edit, remove, and per-agent pause controls are deferred until needed.
-- Browser updates use two-second polling. Add streaming only if the polling delay becomes a demonstrated problem.
+- The first version supports setting and adding only; editing, removal, and per-agent pause remain deferred.
+- Status uses two-second polling. Add streaming only if the delay proves inadequate.
