@@ -70,6 +70,16 @@ make start
 ```
 這會在背景啟動排程監聽器，並在獨立的 tmux session 中初始化對應的 AI Workers。
 
+### Docker 啟動
+
+容器會安裝 `codex` 與 `claude`，並掛載宿主的專案目錄到 `/workspace`、Codex 認證到 `/root/.codex`，以及宿主的 Agy binary。先確認已登入 Codex，然後執行：
+
+```bash
+docker compose up --build
+```
+
+開啟 `http://127.0.0.1:8080`，在 Web 頁面新增 agent。工作目錄要填容器內路徑，例如 `/workspace/your-project`；Agy 預設掛載 `${HOME}/.local/bin/agy`，可用 `AGY_BIN=/path/to/agy docker compose up --build` 覆寫。
+
 ---
 
 ## 📋 終端管理命令 (Makefile)
