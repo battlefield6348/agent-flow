@@ -1,22 +1,2 @@
-# Binary
-/collaborator
-/agent-flow
-/mcp-server
-
-# Configs
-configs/config.yaml
-
-# Database
-db/*.db
-db/*.db-journal
-
-# Go
-vendor/
-
-# Temporary & IDE
+data/
 logs/
-output/
-.idea/
-.vscode/
-.DS_Store
-.gemini/
