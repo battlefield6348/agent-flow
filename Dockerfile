@@ -14,5 +14,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /agent-flow /usr/local/bin/agent-flow
+RUN mkdir -p /home/agent
 WORKDIR /app
 ENTRYPOINT ["agent-flow", "-config", "/app/configs/config.docker.yaml"]

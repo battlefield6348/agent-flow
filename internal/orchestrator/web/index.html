@@ -25,12 +25,12 @@
   </main>
   <script>
     const error = message => document.querySelector('#error').textContent = message;
-    const statusLabel = agent => agent.busy ? '處理任務中' : agent.running ? '執行中' : '閒置';
+    const statusLabel = agent => agent.busy ? '執行任務中' : agent.running ? '待命中' : '已停止';
     async function refresh() {
       const response = await fetch('/api/agents');
       if (!response.ok) return error('無法取得 Agent 狀態。');
       const agents = await response.json();
-      document.querySelector('#agents').innerHTML = agents.length ? agents.map(agent => `<article class="agent"><div class="agent-top"><h3>${agent.name || agent.id}</h3><span class="state ${agent.running ? 'running' : ''}">${statusLabel(agent)}</span></div><p>識別碼：${agent.id}<br>指令：${agent.cmd}<br>工作目錄：${agent.workspace}</p></article>`).join('') : '<div class="empty">尚未新增 Agent。請先儲存排程設定，再建立第一個 Agent。</div>';
+      document.querySelector('#agents').innerHTML = agents.length ? agents.map(agent => `<article class="agent"><div class="agent-top"><h3>${agent.name || agent.id}</h3><span class="state ${agent.running ? 'running' : ''}">${statusLabel(agent)}</span></div><p>識別碼：${agent.id}<br>目前狀態：${statusLabel(agent)}<br>指令：${agent.cmd}<br>工作目錄：${agent.workspace}</p></article>`).join('') : '<div class="empty">尚未新增 Agent。請先儲存排程設定，再建立第一個 Agent。</div>';
     }
     document.querySelector('#settings').onsubmit = async event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); data.interval_seconds = Number(data.interval_seconds); const response = await fetch('/api/settings', {method:'PUT', body:JSON.stringify(data)}); error(response.ok ? '排程設定已儲存。' : await response.text()); };
     document.querySelector('#agent').onsubmit = async event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); data.skills = data.skills ? data.skills.split(',').map(value => value.trim()) : []; const response = await fetch('/api/agents', {method:'POST', body:JSON.stringify(data)}); error(response.ok ? 'Agent 已新增並啟動。' : await response.text()); if (response.ok) event.target.reset(); refresh(); };
