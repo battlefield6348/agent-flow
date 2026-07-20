@@ -50,10 +50,7 @@ attach-r:
 
 # 查看運行狀態
 status:
-	@echo "Current AI Sessions:"
-	@echo "----------------------------------------------------"
-	@tmux ls 2>/dev/null | grep -E 'reviewer|coder' || echo "All AI Workers are OFFLINE."
-	@echo "----------------------------------------------------"
+	@echo "Open http://127.0.0.1:8080 to view and manage agents."
 
 # --- 輔助指令 ---
 
