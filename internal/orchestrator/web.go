@@ -25,6 +25,7 @@ func NewWebServer(settingsPath string, workers *WorkerManager, scheduler *Schedu
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("GET /api/agents", s.getAgents)
 	mux.HandleFunc("POST /api/agents", s.addAgent)
+	mux.HandleFunc("POST /api/agents/restart", s.restartAgent)
 	return mux
 }
 
@@ -123,6 +124,25 @@ func (s *WebServer) addAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *WebServer) restartAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "agent id is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.workers.Restart(id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	for _, status := range s.workers.Statuses() {
+		if status.ID == id {
+			writeJSON(w, http.StatusOK, status)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 var errDuplicateAgent = &duplicateAgentError{}

@@ -44,3 +44,19 @@ func TestDashboardLoadsStoredSettings(t *testing.T) {
 		t.Fatal("dashboard does not load stored settings")
 	}
 }
+
+func TestWebServerRestartsAgent(t *testing.T) {
+	workers := NewWorkerManager(nil, t.TempDir(), &MockTerminal{})
+	if err := workers.AddAndStart(CollaboratorConfig{ID: "coder", Cmd: "echo", Workspace: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(workers.StopAll)
+	workers.Find("coder").Stop()
+
+	h := NewWebServer(t.TempDir()+"/settings.yaml", workers, nil)
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/agents/restart?id=coder", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", r.Code, r.Body.String())
+	}
+}

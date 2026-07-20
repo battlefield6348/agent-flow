@@ -8,7 +8,7 @@
     :root { color-scheme: dark; --bg:#0b1020; --panel:#151c31; --line:#293452; --text:#edf2ff; --muted:#9aa8c7; --accent:#68d6b3; --danger:#ff8d9a; }
     * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--text); font:15px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:radial-gradient(circle at top right,#1b3155 0,transparent 36%),var(--bg); }
     main { max-width:1120px; margin:auto; padding:40px 24px 64px; } header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:28px; } h1 { margin:0; font-size:28px; } h2 { margin:0 0 18px; font-size:18px; } .subtitle { color:var(--muted); margin:4px 0 0; } .badge { color:#06261d; background:var(--accent); padding:5px 10px; border-radius:999px; font-weight:700; font-size:13px; white-space:nowrap; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; } .panel { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 16px 42px #02050d66; } label { display:block; color:var(--muted); font-size:13px; margin:14px 0 5px; } input { width:100%; border:1px solid var(--line); border-radius:9px; padding:10px 12px; color:var(--text); background:#0d1427; font:inherit; } input:focus { outline:2px solid #68d6b366; border-color:var(--accent); } button { margin-top:18px; border:0; border-radius:9px; padding:10px 16px; cursor:pointer; color:#06261d; background:var(--accent); font-weight:800; font:inherit; } button:hover { filter:brightness(1.1); }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:16px; } .panel { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 16px 42px #02050d66; } .settings { margin-top:20px; } summary { cursor:pointer; color:var(--muted); font-weight:700; } label { display:block; color:var(--muted); font-size:13px; margin:14px 0 5px; } input { width:100%; border:1px solid var(--line); border-radius:9px; padding:10px 12px; color:var(--text); background:#0d1427; font:inherit; } input:focus { outline:2px solid #68d6b366; border-color:var(--accent); } button { margin-top:18px; border:0; border-radius:9px; padding:10px 16px; cursor:pointer; color:#06261d; background:var(--accent); font-weight:800; font:inherit; } button:hover { filter:brightness(1.1); } .agent button { float:right; margin-top:12px; background:#b7c6e8; }
     #error { min-height:24px; margin:0 0 16px; color:var(--danger); } .agents { display:grid; grid-template-columns:repeat(auto-fit,minmax(245px,1fr)); gap:14px; } .agent { border:1px solid var(--line); border-radius:13px; padding:16px; background:#0d1427; } .agent-top { display:flex; justify-content:space-between; gap:12px; align-items:start; } .agent h3 { margin:0; font-size:16px; } .agent p { margin:8px 0 0; color:var(--muted); word-break:break-all; font-size:13px; } .state { border-radius:99px; padding:3px 8px; font-size:12px; font-weight:700; background:#24314d; color:#c9d6ef; } .state.running { color:#052219; background:var(--accent); } .empty { grid-column:1/-1; color:var(--muted); text-align:center; padding:32px; border:1px dashed var(--line); border-radius:13px; }
     @media (max-width:720px) { main { padding:24px 16px; } header,.grid { display:block; } .badge { display:inline-block; margin-top:12px; } .panel { margin-bottom:16px; } }
   </style>
@@ -17,11 +17,14 @@
   <main>
     <header><div><h1>Agent Flow 控制台</h1><p class="subtitle">設定排程、管理本機 AI Agent 與查看執行狀態。</p></div><span class="badge">本機服務</span></header>
     <p id="error" role="alert"></p>
-    <section class="grid">
+    <section class="panel"><h2>Agent 狀態</h2><div id="agents" class="agents"></div></section>
+    <details class="panel settings">
+      <summary>管理設定（排程與 Agent）</summary>
+      <section class="grid">
       <form class="panel" id="settings"><h2>排程設定</h2><label for="gitlab_url">GitLab URL</label><input id="gitlab_url" name="gitlab_url" placeholder="https://gitlab.example.com" required><label for="interval_seconds">輪詢間隔（秒）</label><input id="interval_seconds" name="interval_seconds" type="number" min="1" placeholder="60" required><button>儲存排程設定</button></form>
       <form class="panel" id="agent"><h2>新增 Agent</h2><label for="id">識別碼</label><input id="id" name="id" placeholder="coder" required><label for="name">名稱</label><input id="name" name="name" placeholder="自動編碼 Agent"><label for="cmd">執行指令</label><input id="cmd" name="cmd" placeholder="codex、claude 或 agy" required><label for="workspace">工作目錄</label><input id="workspace" name="workspace" placeholder="/workspace/your-project" required><label for="gitlab_token">GitLab Token</label><input id="gitlab_token" name="gitlab_token" type="password" required><label for="skills">Skills（以逗號分隔）</label><input id="skills" name="skills" placeholder="superpowers:senior-coder-workflow"><button>新增並啟動 Agent</button></form>
-    </section>
-    <section class="panel"><h2>Agent 狀態</h2><div id="agents" class="agents"></div></section>
+      </section>
+    </details>
   </main>
   <script>
     const error = message => document.querySelector('#error').textContent = message;
@@ -37,10 +40,11 @@
       const response = await fetch('/api/agents');
       if (!response.ok) return error('無法取得 Agent 狀態。');
       const agents = await response.json();
-      document.querySelector('#agents').innerHTML = agents.length ? agents.map(agent => `<article class="agent"><div class="agent-top"><h3>${agent.name || agent.id}</h3><span class="state ${agent.running ? 'running' : ''}">${statusLabel(agent)}</span></div><p>識別碼：${agent.id}<br>目前狀態：${statusLabel(agent)}<br>指令：${agent.cmd}<br>工作目錄：${agent.workspace}</p></article>`).join('') : '<div class="empty">尚未新增 Agent。請先儲存排程設定，再建立第一個 Agent。</div>';
+      document.querySelector('#agents').innerHTML = agents.length ? agents.map(agent => `<article class="agent"><div class="agent-top"><h3>${agent.name || agent.id}</h3><span class="state ${agent.running ? 'running' : ''}">${statusLabel(agent)}</span></div><p>識別碼：${agent.id}<br>目前狀態：${statusLabel(agent)}<br>指令：${agent.cmd}<br>工作目錄：${agent.workspace}</p><button onclick="restartAgent('${agent.id}')">重新啟動</button></article>`).join('') : '<div class="empty">尚未新增 Agent。請先儲存排程設定，再建立第一個 Agent。</div>';
     }
     document.querySelector('#settings').onsubmit = async event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); data.interval_seconds = Number(data.interval_seconds); const response = await fetch('/api/settings', {method:'PUT', body:JSON.stringify(data)}); error(response.ok ? '排程設定已儲存。' : await response.text()); };
     document.querySelector('#agent').onsubmit = async event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); data.skills = data.skills ? data.skills.split(',').map(value => value.trim()) : []; const response = await fetch('/api/agents', {method:'POST', body:JSON.stringify(data)}); error(response.ok ? 'Agent 已新增並啟動。' : await response.text()); if (response.ok) event.target.reset(); refresh(); };
+    async function restartAgent(id) { const response = await fetch(`/api/agents/restart?id=${encodeURIComponent(id)}`, {method:'POST'}); error(response.ok ? `${id} 已重新啟動。` : await response.text()); refresh(); }
     loadSettings(); refresh(); setInterval(refresh, 2000);
   </script>
 </body>

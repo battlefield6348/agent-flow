@@ -93,16 +93,16 @@ func (w *Worker) Start() {
 	}
 	w.stopCh = make(chan struct{})
 	w.running = true
-	go w.runLoop()
+	go w.runLoop(w.stopCh)
 }
 
-func (w *Worker) runLoop() {
+func (w *Worker) runLoop(stopCh <-chan struct{}) {
 	for {
 		select {
-		case <-w.stopCh:
+		case <-stopCh:
 			return
 		default:
-			w.runProcess()
+			w.runProcess(stopCh)
 			time.Sleep(5 * time.Second)
 		}
 	}
@@ -157,7 +157,7 @@ func (w *Worker) isPromptReady(screen string) bool {
 	return false
 }
 
-func (w *Worker) runProcess() {
+func (w *Worker) runProcess(stopCh <-chan struct{}) {
 	sessionID := w.Config.ID
 	slog.Info("Worker engine starting", "worker_id", sessionID)
 
@@ -273,7 +273,7 @@ func (w *Worker) runProcess() {
 				w.handleInput(input, sessionID)
 			case <-stopInput:
 				return
-			case <-w.stopCh:
+			case <-stopCh:
 				return
 			}
 		}
@@ -290,7 +290,7 @@ func (w *Worker) runProcess() {
 			break
 		}
 		select {
-		case <-w.stopCh:
+		case <-stopCh:
 			close(stopInput)
 			return
 		default:
@@ -535,6 +535,16 @@ func (m *WorkerManager) Find(id string) *Worker {
 			return worker
 		}
 	}
+	return nil
+}
+
+func (m *WorkerManager) Restart(id string) error {
+	worker := m.Find(id)
+	if worker == nil {
+		return fmt.Errorf("worker %s does not exist", id)
+	}
+	worker.Stop()
+	worker.Start()
 	return nil
 }
 
