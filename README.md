@@ -1,122 +1,136 @@
-# Agent-Flow: 基於 Go 語言的本地多 AI 代理協作與 GitLab 任務編排器 (Multi-Agent Orchestrator)
+# Agent Flow：GitLab Todo 驅動的本地 AI 多代理編排器
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/battlefield6348/agent-flow)](https://golang.org)
-[![License](https://img.shields.io/github/license/battlefield6348/agent-flow)](LICENSE)
+[Docker 啟動](#快速啟動) · [疑難排解](#疑難排解)
 
-`agent-flow` 是一個專為 Go 開發者與 DevSecOps 團隊設計的本地多 AI 代理 (Multi-Agent) 協作編排器。透過整合 **GitLab Todos API** 與 **tmux 終端適配器**，本專案能自動定時掃描 GitLab 上的待辦任務，動態調度並啟動本地端的 AI Worker（如 Coder 與 Reviewer 代理），在完全隔離的沙盒環境中執行代碼生成、重構與自動化代碼評審 (AI Code Review) 任務。
+Agent Flow 是一個以 Go 實作的本地多代理編排器。它會輪詢 GitLab Merge Request 的 Todos，將工作分派給 Coder 與 Reviewer 等 AI Agent，並以 GitLab 留言驗證任務結果。適合想在自己的 Docker 環境中整合 Codex、Claude Code、Agy、tmux 與 GitLab 自動化流程的團隊。
 
----
+## 解決什麼問題？
 
-## 🎯 核心功能與技術優勢
+- 讓 GitLab Todo 成為 AI code review 與修正任務的入口。
+- 在一個 Docker Compose 啟動流程中同時提供 Web 控制台、排程器與 Workers。
+- 讓 Coder 只處理最新審查結論要求修正的 MR，避免誤觸發自動修改。
+- 只有當 Agent 留下符合角色格式的新 GitLab 留言時才結案，避免「CLI 看似完成、實際沒有回覆 MR」的假成功。
+- 為 Reviewer、Coder、Codex、Claude Code 與 Agy 保留獨立的 tmux 工作階段與設定。
 
-*   **🚀 多代理本地調度 (Local Multi-Agent Orchestration)**：利用本地 `tmux` 終端多路復用技術，獨立運行並維護多個 AI Worker 實體，完全無需依賴繁重的容器化環境。
-*   **📬 GitLab Todos API 自動輪詢**：主動式任務驅動，自動定時掃描被指派或提及的 GitLab 待辦事項 (Todos)，實現任務的即時接收與處理。
-*   **🔒 環境變數沙盒隔離 (Process Sandbox Isolation)**：內建嚴格的環境變數過濾機制（自動清除 IDE 宿主變數如 `VSCODE_` 與 `remote-cli`），確保 AI CLI 啟動的純淨性與穩定性。
-*   **🛠️ 自動技能注入 (Automatic Skill Injection)**：支援對 AI 代理自動載入並執行特定的引導技能（例如 `senior-coder-workflow` 或 `git-mr-workflow-reviewer`），極速完成初始化引導。
-*   **📂 動態工作空間切換 (Dynamic Workspace Switching)**：根據 GitLab Merge Request 所關聯的專案，自動同步切換 Worker 的本地工作目錄，無縫執行代碼測試與分析。
-
----
-
-## 🧱 系統架構設計
-
-以下為 `agent-flow` 的核心任務調度與 Worker 執行流程：
+## 架構
 
 ```mermaid
-graph TD
-    A[GitLab Todos API] -->|定時輪詢| B(Scheduler 任務調度器)
-    B -->|偵測到 Pending 任務| C{權限與專案白名單驗證}
-    C -->|驗證通過| D[切換 Worker 本地工作空間]
-    D --> E[透過 TmuxTerminal 啟動 AI Worker]
-    E -->|環境變數淨化| F(啟動 Coder / Reviewer 代理)
-    F -->|自動注入引導技能| G[執行自動化開發與評審任務]
+flowchart LR
+  GitLab[GitLab Todos / MR Notes] --> Runner[Agent Flow runner]
+  Runner --> Scheduler[Scheduler]
+  Scheduler --> Workers[Coder / Reviewer Workers]
+  Workers --> Notes[GitLab MR Notes]
+  Browser[Browser] --> Web[Nginx Web UI]
+  Web --> Runner
 ```
 
----
+`docker compose up --build` 會啟動兩個容器：
 
-## 🛠️ 快速啟動
+- `agent-flow`：提供 API、輪詢 GitLab Todos、執行 tmux Workers。
+- `web`：提供控制台並將 `/api/` 代理至 `agent-flow:8081`。
 
-目前的 `configs/config.yaml` 僅設定服務啟動項目：`listen_addr`、`logs.path` 與 `settings_path`。GitLab、輪詢規則與所有 agent 均在服務啟動後透過 `http://127.0.0.1:8080` 設定，並持久化到 `data/settings.yaml`。
+## 快速啟動
 
-### 1. 系統需求
-*   **Go** 1.21 或以上版本
-*   **tmux** (Linux 系統終端多路復用器)
-*   **Antigravity CLI / Codex CLI**（已安裝且設定於環境變數中）
+### 前置條件
 
-### 2. 安裝與設定
-複製範例設定檔，並填入您的 GitLab API Access Token 與專案配置：
+- Docker 與 Docker Compose
+- 可存取 GitLab API 的 Token
+- 已登入的 Codex 認證目錄：`~/.codex`
+- 欲讓 Agent 操作的宿主專案位於 `${HOME}/projects`；它會掛載到容器內的 `/workspace`
+- 若使用 Agy，提供可執行檔；預設位置為 `${HOME}/.local/bin/agy`
 
-```bash
-cp configs/config.yaml.example configs/config.yaml
-```
-
-編輯 `configs/config.yaml` 進行客製化調整：
-```yaml
-gitlab:
-  url: "https://gitlab.example.com"
-  token: "YOUR_PERSONAL_ACCESS_TOKEN"
-
-workers:
-  coder:
-    cmd: "codex"
-    workspace: "/home/user/projects/workspace-coder"
-  reviewer:
-    cmd: "/home/user/.local/bin/agy"
-    workspace: "/home/user/projects/workspace-reviewer"
-```
-
-### 3. 啟動編排器服務
-```bash
-make start
-```
-這會在背景啟動排程監聽器，並在獨立的 tmux session 中初始化對應的 AI Workers。
-
-### Docker 啟動
-
-容器會啟動 Agent Flow runner 與 Web，並掛載宿主的專案目錄到 `/workspace`、Codex 認證到 `/root/.codex`，以及宿主的 Agy binary。先確認已登入 Codex，再執行：
+### 啟動
 
 ```bash
 docker compose up --build
 ```
 
-開啟 `http://127.0.0.1:8080`，在 Web 頁面新增 agent。工作目錄要填容器內路徑，例如 `/workspace/your-project`；Agy 預設掛載 `${HOME}/.local/bin/agy`，可用 `AGY_BIN=/path/to/agy docker compose up --build` 覆寫。
+開啟 <http://127.0.0.1:8080>，依序：
 
----
+1. 在「管理設定」儲存 GitLab URL、輪詢間隔、允許專案與 MR 作者。
+2. 新增 Agent，填入 ID、指令、GitLab Token 與容器內工作目錄。
+3. 例如宿主的 `${HOME}/projects/my-service`，工作目錄填 `/workspace/my-service`。
 
-## 📋 終端管理命令 (Makefile)
+設定會保存於 `data/settings.yaml`，重啟容器後仍會保留。
 
-專案提供完整的 Makefile 工具鏈，便於您即時監控與偵錯：
+### 常用 Agent 範例
 
-| 命令 | 說明 |
-| :--- | :--- |
-| `make start` | 啟動本地多代理編排服務與監聽排程 |
-| `make stop` | 停止所有運作中的 AI Worker 實體並清理 tmux 會話 |
-| `make status` | 檢視當前所有運作中的 AI Worker 狀態 |
-| `make logs` | 監看編排器的即時運作日誌 |
-| `make attach-c` | 連接並監看 Coder Worker 的即時互動畫面 (`tmux attach`) |
-| `make attach-r` | 連接並監看 Reviewer Worker 的即時互動畫面 (`tmux attach`) |
+| 角色 | ID | 指令 | 用途 |
+| --- | --- | --- | --- |
+| Reviewer | `reviewer` | `agy`、`claude` 或 `codex` | 撰寫 MR 審查結論 |
+| Coder | `coder` | `codex` 或 `claude` | 依最新審查意見修正同一個 MR 分支 |
 
----
+Coder 只會在最新審查結論含有「需修改後再審」時接收任務。完成後必須在 MR 留下 `## 修正回覆`；Reviewer 則使用 `## 審查結論`（相容舊格式 `### 結論`）。
 
-## 📐 專案目錄結構
+## Web 控制台
 
-```text
-├── cmd
-│   └── agent-flow          # 程式進入點與 GitLab 排程監聽邏輯
-├── configs
-│   ├── config.yaml         # 本地運作設定檔（GitLab API 與 Worker 設定）
-│   └── config.yaml.example # 設定檔範例模板
-├── internal
-│   └── orchestrator        # 核心編排邏輯（Worker 管理、Tmux 適配、GitLab API 對接）
-├── logs                    # AI Worker 的對話紀錄與執行日誌
-└── Makefile                # 專案生命週期管理腳本
+控制台會顯示每個 Agent 的 ID、指令、工作目錄與目前狀態：
+
+- 綠色：待命中。
+- 紫色：執行任務中。
+- 灰色：已停止。
+- 成功、資訊、警告與錯誤訊息分別以綠、藍、橘、紅區分。
+
+Web UI 不會回傳或顯示 GitLab Token。
+
+## 疑難排解
+
+### Web UI 的 `/api/agents` 回傳 502
+
+確認兩個服務都在執行：
+
+```bash
+docker compose ps
 ```
 
----
+應同時看到 `agent-flow` 與 `web`。再測試 API：
 
-## 🤝 開發規範與禁忌
+```bash
+curl --fail --silent http://127.0.0.1:8080/api/agents
+```
 
-所有對本專案進行貢獻的開發者，請務必遵循 [GEMINI.md](GEMINI.md) 中的開發規範：
-1.  **效能至上**：嚴禁在頻繁呼叫的函式內部使用 `regexp.MustCompile`，請將其提取為 Package 層級的常駐變數。
-2.  **變更一致性**：若修改了資料過濾機制，須同步檢查同領域的 `List`、`Get` 與 `Options/Dropdown` 相關實作。
-3.  **註解規範**：嚴格禁止「標籤式註解」（如 `// 1. 準備數據`）。註解應闡述「為什麼這樣做」，而非「正在做什麼」。
-4.  **本地驗證**：提交任何變更前，必須在本地完成 `go fmt`、`go vet` 以及單元測試。
+若 `agent-flow` 未啟動，查看其日誌：
+
+```bash
+docker compose logs --tail=100 agent-flow
+```
+
+### Agent 顯示已停止或無法啟動
+
+- 確認 Agent 指令在容器內可用，例如 `codex`、`claude` 或 `agy`。
+- 確認 Codex 認證已掛載到 `/root/.codex`。
+- 確認工作目錄使用容器路徑 `/workspace/...`，而不是宿主絕對路徑。
+- 查看 runner 日誌與 tmux session：
+
+```bash
+docker compose logs --tail=100 agent-flow
+docker compose exec agent-flow tmux ls
+```
+
+### Agy 不在預設位置
+
+```bash
+AGY_BIN=/path/to/agy docker compose up --build
+```
+
+## 開發
+
+```bash
+go test ./... -count=1
+go fmt ./...
+go vet ./...
+docker compose config
+```
+
+專案核心位於 `internal/orchestrator`；GitLab API client 位於 `internal/gitlab`；Web UI 位於 `internal/orchestrator/web/index.html`。
+
+## 安全性與操作提醒
+
+- 將 `data/` 與任何含 Token 的設定檔保留在版本控制之外。
+- 僅掛載 Agent 實際需要操作的 workspace。
+- 允許專案與 MR 作者白名單可縮小自動派工範圍。
+- 對外使用前，請將 Web port 限制於可信任網路。
+
+## 授權
+
+請參閱 [LICENSE](LICENSE)。
