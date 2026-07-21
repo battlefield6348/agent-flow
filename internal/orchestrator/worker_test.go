@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,13 +13,26 @@ type MockTerminal struct {
 	mu            sync.Mutex
 	sessionActive bool
 	sentKeys      []string
+	startedEnv    []string
+	started       chan struct{}
 }
 
 func (m *MockTerminal) Start(ctx context.Context, sessionID string, workspace string, cmd string, env []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionActive = true
+	m.startedEnv = append([]string(nil), env...)
+	if m.started != nil {
+		close(m.started)
+		m.started = nil
+	}
 	return nil
+}
+
+func (m *MockTerminal) StartedEnv() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.startedEnv...)
 }
 
 func (m *MockTerminal) Stop(sessionID string) error {
@@ -90,6 +104,37 @@ func TestWorker_LifecycleSafety(t *testing.T) {
 		}
 	}()
 	w.Stop() // 重複關閉
+}
+
+func TestWorkerPassesOnlyConfiguredTokensToTerminal(t *testing.T) {
+	terminal := &MockTerminal{started: make(chan struct{})}
+	worker := NewWorker(CollaboratorConfig{
+		ID: "agent-a", Cmd: "codex", Workspace: t.TempDir(),
+		GitLabToken: "gitlab-a",
+	}, t.TempDir(), terminal)
+	worker.Start()
+	defer worker.Stop()
+
+	select {
+	case <-terminal.started:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not start")
+	}
+
+	got := terminal.StartedEnv()
+	want := []string{"TERM=screen-256color", "GITLAB_TOKEN=gitlab-a"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("environment = %#v, want %#v", got, want)
+	}
+}
+
+func TestTaskCompletionRequiresPaneChange(t *testing.T) {
+	if taskCompletionReady(false, 2, ">") {
+		t.Fatal("unchanged ready prompt must not complete a newly sent task")
+	}
+	if !taskCompletionReady(true, 2, ">") {
+		t.Fatal("changed and stable ready prompt must complete the task")
+	}
 }
 
 func TestWorker_BuildPromptMsg(t *testing.T) {

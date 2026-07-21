@@ -161,28 +161,27 @@ func (w *Worker) runProcess(stopCh <-chan struct{}) {
 	sessionID := w.Config.ID
 	slog.Info("Worker engine starting", "worker_id", sessionID)
 
-	var additionalArgs []string
-	var superpowersSkills []string
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		for _, skill := range w.Config.Skills {
-			// 移除可能存在的 "superpowers:" 前綴以取得正確的本地技能目錄名稱
-			skillName := skill
-			if strings.HasPrefix(skill, "superpowers:") {
-				skillName = strings.TrimPrefix(skill, "superpowers:")
+	skills := w.Config.Skills
+	if len(skills) == 0 {
+		skills = DefaultSkills(w.Config.ID)
+	}
+	additionalArgs := make([]string, 0, len(skills))
+	loadedSkills := make([]string, 0, len(skills))
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		for _, skill := range skills {
+			skillName := strings.TrimPrefix(skill, "superpowers:")
+			if _, err := os.Stat(filepath.Join(homeDir, ".gemini/antigravity/skills", skillName)); err != nil {
+				continue
 			}
-			skillPath := filepath.Join(homeDir, ".gemini/antigravity/skills", skillName)
-			if _, err := os.Stat(skillPath); err == nil {
-				if !strings.Contains(w.Config.Cmd, "agy") {
-					additionalArgs = append(additionalArgs, "--add-dir", skillPath)
-				}
-				superpowersSkills = append(superpowersSkills, skillName)
+			if !strings.Contains(strings.ToLower(w.Config.Cmd), "agy") {
+				additionalArgs = append(additionalArgs, "--add-dir", filepath.Join(homeDir, ".gemini/antigravity/skills", skillName))
 			}
+			loadedSkills = append(loadedSkills, skillName)
 		}
 	}
 
-	allArgs := append(w.Config.Args, additionalArgs...)
-	argsStr := strings.TrimSpace(strings.Join(allArgs, " "))
+	args := append(append([]string(nil), w.Config.Args...), additionalArgs...)
+	argsStr := strings.TrimSpace(strings.Join(args, " "))
 	var fullCmd string
 	if argsStr != "" {
 		fullCmd = fmt.Sprintf("%s %s", w.Config.Cmd, argsStr)
@@ -190,35 +189,16 @@ func (w *Worker) runProcess(stopCh <-chan struct{}) {
 		fullCmd = w.Config.Cmd
 	}
 
-	var cleanEnv []string
-	hasTerm := false
-	for _, env := range os.Environ() {
-		if strings.HasPrefix(env, "VSCODE_") || strings.HasPrefix(env, "ANTIGRAVITY_") || strings.HasPrefix(env, "TERM_PROGRAM=") || strings.HasPrefix(env, "ELECTRON_RUN_AS_NODE=") {
-			continue
+	env := []string{"TERM=screen-256color"}
+	for _, pair := range []struct{ key, value string }{
+		{"GITLAB_TOKEN", w.Config.GitLabToken},
+	} {
+		if pair.value != "" {
+			env = append(env, pair.key+"="+pair.value)
 		}
-		if strings.HasPrefix(env, "TERM=") {
-			cleanEnv = append(cleanEnv, "TERM=screen-256color")
-			hasTerm = true
-			continue
-		}
-		if strings.HasPrefix(env, "PATH=") {
-			pathVal := strings.TrimPrefix(env, "PATH=")
-			var cleanPaths []string
-			for _, p := range strings.Split(pathVal, ":") {
-				if !strings.Contains(p, "remote-cli") {
-					cleanPaths = append(cleanPaths, p)
-				}
-			}
-			cleanEnv = append(cleanEnv, "PATH="+strings.Join(cleanPaths, ":"))
-			continue
-		}
-		cleanEnv = append(cleanEnv, env)
-	}
-	if !hasTerm {
-		cleanEnv = append(cleanEnv, "TERM=screen-256color")
 	}
 
-	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, cleanEnv); err != nil {
+	if err := w.Terminal.Start(context.Background(), sessionID, w.Config.Workspace, fullCmd, env); err != nil {
 		slog.Error("Failed to start terminal", "worker_id", sessionID, "error", err)
 		return
 	}
@@ -244,24 +224,9 @@ func (w *Worker) runProcess(stopCh <-chan struct{}) {
 	if !ready {
 		slog.Warn("Ready pattern not detected, proceeding anyway", "worker_id", sessionID)
 	}
-
-	if ready && len(superpowersSkills) > 0 {
-		time.Sleep(5 * time.Second)
-		for _, skill := range superpowersSkills {
-			slog.Info("Injecting skill", "worker_id", sessionID, "skill", skill)
-			promptMsg := w.BuildPromptMsg(sessionID)
-			prefix := w.GetSkillPrefix()
-			skillCmd := fmt.Sprintf("%s%s %s", prefix, skill, promptMsg)
-			_ = w.Terminal.SendKeys(sessionID, skillCmd, true)
-
-			time.Sleep(5 * time.Second)
-			for i := 0; i < 45; i++ {
-				screen, _ := w.Terminal.CapturePane(sessionID)
-				if w.isPromptReady(screen) {
-					break
-				}
-				time.Sleep(2 * time.Second)
-			}
+	if ready {
+		for _, skill := range loadedSkills {
+			_ = w.Terminal.SendKeys(sessionID, fmt.Sprintf("%s%s %s", w.GetSkillPrefix(), skill, w.BuildPromptMsg(sessionID)), true)
 		}
 	}
 
@@ -309,14 +274,15 @@ func (w *Worker) handleInput(input string, sessionID string) {
 		slog.Warn("Worker not ready for input, proceeding anyway", "worker_id", sessionID)
 	}
 
-	// 記錄發送指令前的歷史行數，以便後續提取增量回覆
+	// 記錄發送指令前的畫面與歷史，以避免把舊提示符誤判為新任務完成。
+	screenBefore, _ := w.Terminal.CapturePane(sessionID)
 	nBefore := w.getHistoryLineCount(sessionID)
 
 	_ = w.Terminal.SendKeys(sessionID, input, true)
 	_ = w.Terminal.SendKeys(sessionID, "", true) // 額外的 Enter 確保 CLI 觸發執行
 
 	// 等待執行完成並提取輸出
-	if !w.pollUntilReady(3600) {
+	if !w.pollUntilReady(3600, screenBefore) {
 		slog.Warn("Polling timeout or interrupted", "worker_id", sessionID)
 	}
 
@@ -336,9 +302,14 @@ func (w *Worker) waitForReady(maxAttempts int) bool {
 }
 
 // pollUntilReady 持續偵測內容變化，直到畫面穩定且出現提示符
-func (w *Worker) pollUntilReady(maxSeconds int) bool {
-	var lastScreen string
+func taskCompletionReady(seenChange bool, sameCount int, screen string) bool {
+	return seenChange && sameCount >= 2 && strings.TrimSpace(screen) != ""
+}
+
+func (w *Worker) pollUntilReady(maxSeconds int, beforeScreen string) bool {
+	lastScreen := beforeScreen
 	sameCount := 0
+	seenChange := false
 	for poll := 0; poll < maxSeconds; poll++ {
 		time.Sleep(1 * time.Second)
 		if w.Terminal.IsPaneDead(w.Config.ID) {
@@ -350,12 +321,15 @@ func (w *Worker) pollUntilReady(maxSeconds int) bool {
 		if CleanLine(currScreen) == CleanLine(lastScreen) && currScreen != "" {
 			sameCount++
 		} else {
+			if CleanLine(currScreen) != CleanLine(beforeScreen) {
+				seenChange = true
+			}
 			sameCount = 0
 		}
 		lastScreen = currScreen
 
-		// 當畫面連續兩秒無變化且出現提示符時，視為執行結束
-		if sameCount >= 2 && w.isPromptReady(currScreen) {
+		// 必須先看見新任務造成畫面變化，才可將穩定提示符視為完成。
+		if taskCompletionReady(seenChange, sameCount, currScreen) && w.isPromptReady(currScreen) {
 			return true
 		}
 	}

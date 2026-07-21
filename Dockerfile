@@ -1,19 +1,4 @@
-FROM golang:1.25-bookworm AS build
+FROM nginx:1.29-alpine
 
-WORKDIR /src
-COPY go.mod ./
-RUN go mod download
-COPY . .
-RUN go build -o /agent-flow ./cmd/agent-flow
-
-FROM node:24-bookworm-slim
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates git tmux \
-    && npm install -g @anthropic-ai/claude-code @openai/codex \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /agent-flow /usr/local/bin/agent-flow
-RUN mkdir -p /home/agent
-WORKDIR /app
-ENTRYPOINT ["agent-flow", "-config", "/app/configs/config.docker.yaml"]
+COPY internal/orchestrator/web/index.html /usr/share/nginx/html/index.html
+COPY nginx.conf /etc/nginx/conf.d/default.conf

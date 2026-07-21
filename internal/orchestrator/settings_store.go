@@ -11,6 +11,7 @@ import (
 type WorkflowSettings struct {
 	GitLabURL        string               `yaml:"gitlab_url" json:"gitlab_url"`
 	IntervalSeconds  int                  `yaml:"interval_seconds" json:"interval_seconds"`
+	CheckCISuccess   bool                 `yaml:"check_ci_success" json:"check_ci_success"`
 	AllowedProjects  []string             `yaml:"allowed_projects" json:"allowed_projects"`
 	AllowedMRAuthors []string             `yaml:"allowed_mr_authors" json:"allowed_mr_authors"`
 	Agents           []CollaboratorConfig `yaml:"agents" json:"-"`

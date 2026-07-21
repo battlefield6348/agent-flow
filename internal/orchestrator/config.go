@@ -1,18 +1,6 @@
 package orchestrator
 
-import (
-	"os"
-
-	"gopkg.in/yaml.v3"
-)
-
-type StartupConfig struct {
-	Logs struct {
-		Path string `yaml:"path"`
-	} `yaml:"logs"`
-	ListenAddr   string `yaml:"listen_addr"`
-	SettingsPath string `yaml:"settings_path"`
-}
+import "strings"
 
 type CollaboratorConfig struct {
 	ID                string   `yaml:"id" json:"id"`
@@ -27,23 +15,13 @@ type CollaboratorConfig struct {
 	PromptSuffix      string   `yaml:"prompt_suffix" json:"prompt_suffix"`
 }
 
-func LoadStartupConfig(path string) (*StartupConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+func DefaultSkills(agentID string) []string {
+	switch strings.ToLower(agentID) {
+	case "reviewer":
+		return []string{"superpowers:git-mr-workflow-reviewer"}
+	case "coder":
+		return []string{"superpowers:senior-coder-workflow"}
+	default:
+		return nil
 	}
-	var config StartupConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
-	if config.Logs.Path == "" {
-		config.Logs.Path = "./logs"
-	}
-	if config.ListenAddr == "" {
-		config.ListenAddr = "127.0.0.1:8080"
-	}
-	if config.SettingsPath == "" {
-		config.SettingsPath = "data/settings.yaml"
-	}
-	return &config, nil
 }

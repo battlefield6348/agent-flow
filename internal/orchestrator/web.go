@@ -25,8 +25,56 @@ func NewWebServer(settingsPath string, workers *WorkerManager, scheduler *Schedu
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("GET /api/agents", s.getAgents)
 	mux.HandleFunc("POST /api/agents", s.addAgent)
+	mux.HandleFunc("DELETE /api/agents/{id}", s.deleteAgent)
 	mux.HandleFunc("POST /api/agents/restart", s.restartAgent)
 	return mux
+}
+
+func (s *WebServer) deleteAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.mu.Lock()
+	settings, err := LoadWorkflowSettings(s.settingsPath)
+	if err == nil {
+		agents := make([]CollaboratorConfig, 0, len(settings.Agents))
+		found := false
+		for _, agent := range settings.Agents {
+			if agent.ID == id {
+				found = true
+				continue
+			}
+			agents = append(agents, agent)
+		}
+		if !found {
+			err = errDuplicateAgent
+		} else {
+			settings.Agents = agents
+			err = SaveWorkflowSettings(s.settingsPath, settings)
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		if err == errDuplicateAgent {
+			http.Error(w, "agent does not exist", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if worker := s.workers.Find(id); worker != nil {
+		worker.Stop()
+		s.workers.mu.Lock()
+		for i, candidate := range s.workers.Workers {
+			if candidate == worker {
+				s.workers.Workers = append(s.workers.Workers[:i], s.workers.Workers[i+1:]...)
+				break
+			}
+		}
+		s.workers.mu.Unlock()
+	}
+	if s.scheduler != nil {
+		_ = s.scheduler.StopAgent(id)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *WebServer) index(w http.ResponseWriter, r *http.Request) {
@@ -88,6 +136,9 @@ func (s *WebServer) addAgent(w http.ResponseWriter, r *http.Request) {
 	if agent.ID == "" || agent.Cmd == "" || agent.Workspace == "" || agent.GitLabToken == "" {
 		http.Error(w, "id, cmd, workspace, and gitlab_token are required", http.StatusBadRequest)
 		return
+	}
+	if len(agent.Skills) == 0 {
+		agent.Skills = DefaultSkills(agent.ID)
 	}
 	s.mu.Lock()
 	settings, err := LoadWorkflowSettings(s.settingsPath)

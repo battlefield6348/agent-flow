@@ -1,13 +1,7 @@
 services:
-  agent-flow:
+  web:
     build: .
-    user: "${UID:-1000}:${GID:-1000}"
-    environment:
-      HOME: /home/agent
     ports:
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - ./:/app
-      - ${HOME}/projects:/workspace
-      - ${HOME}/.codex:/home/agent/.codex
-      - ${AGY_BIN:-${HOME}/.local/bin/agy}:/usr/local/bin/agy:ro
+      - "127.0.0.1:8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type OrchestratorService struct {
 	workspaceRepo  WorkspaceRepository
 	workerManager  *WorkerManager
 	checkCISuccess bool
+	mu             sync.RWMutex
 }
 
 func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *WorkerManager) *OrchestratorService {
@@ -38,7 +40,15 @@ func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *Wor
 }
 
 func (s *OrchestratorService) SetCheckCISuccess(val bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.checkCISuccess = val
+}
+
+func (s *OrchestratorService) CheckCISuccess() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.checkCISuccess
 }
 
 // ScanAndAssignForAgent 針對特定的 Agent 執行掃描與任務分派的核心業務邏輯
@@ -86,7 +96,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 		}
 
 		// 檢查 CI 狀態
-		if s.checkCISuccess {
+		if s.CheckCISuccess() {
 			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
 			if err != nil {
 				slog.Error("Failed to fetch pipelines for MR", "project", projectPath, "mr_iid", mr.IID, "error", err)

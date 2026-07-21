@@ -64,6 +64,20 @@ func (s *Scheduler) StartAgent(col CollaboratorConfig) error {
 	return nil
 }
 
+func (s *Scheduler) StopAgent(id string) error {
+	s.mu.Lock()
+	cancel, exists := s.agentCancels[id]
+	if exists {
+		delete(s.agentCancels, id)
+	}
+	s.mu.Unlock()
+	if !exists {
+		return fmt.Errorf("agent %s is not scheduled", id)
+	}
+	cancel()
+	return nil
+}
+
 func (s *Scheduler) Update(settings WorkflowSettings) {
 	s.mu.Lock()
 	s.interval = time.Duration(settings.IntervalSeconds) * time.Second
@@ -74,6 +88,9 @@ func (s *Scheduler) Update(settings WorkflowSettings) {
 	s.allowedMRAuthors = settings.AllowedMRAuthors
 	s.gitlabURL = settings.GitLabURL
 	s.mu.Unlock()
+	if s.service != nil {
+		s.service.SetCheckCISuccess(settings.CheckCISuccess)
+	}
 }
 
 func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorConfig) {

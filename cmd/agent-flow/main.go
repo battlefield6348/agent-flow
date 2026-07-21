@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,17 +18,12 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
-	flag.Parse()
-
-	cfg, err := orchestrator.LoadStartupConfig(*configPath)
-	if err != nil {
-		slog.Error("Failed to load config", "error", err, "path", *configPath)
-		os.Exit(1)
-	}
-
-	logDir := cfg.Logs.Path
-	settings, err := orchestrator.LoadWorkflowSettings(cfg.SettingsPath)
+	const (
+		settingsPath = "data/settings.yaml"
+		logDir       = "logs"
+		listenAddr   = "127.0.0.1:8081"
+	)
+	settings, err := orchestrator.LoadWorkflowSettings(settingsPath)
 	if err != nil {
 		slog.Error("Failed to load workflow settings", "error", err)
 		os.Exit(1)
@@ -42,6 +36,7 @@ func main() {
 	workerManager := orchestrator.NewWorkerManager(settings.Agents, logDir, terminal)
 
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
+	service.SetCheckCISuccess(settings.CheckCISuccess)
 	slog.Info("Starting local Workers in tmux...")
 	workerManager.StartAll()
 
@@ -55,8 +50,8 @@ func main() {
 	defer cancel()
 
 	scheduler.Start(ctx)
-	slog.Info("Agent Flow web UI is active", "address", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, orchestrator.NewWebServer(cfg.SettingsPath, workerManager, scheduler)); err != nil {
+	slog.Info("Agent Flow web UI is active", "address", listenAddr)
+	if err := http.ListenAndServe(listenAddr, orchestrator.NewWebServer(settingsPath, workerManager, scheduler)); err != nil {
 		slog.Error("Web server stopped", "error", err)
 	}
 }
