@@ -8,6 +8,20 @@ import (
 	"testing"
 )
 
+func TestWebServerIndexIncludesDashboardControls(t *testing.T) {
+	h := NewWebServer(t.TempDir()+"/settings.yaml", NewWorkerManager(nil, t.TempDir(), &MockTerminal{}), nil)
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	if r.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", r.Code, r.Body.String())
+	}
+	for _, want := range []string{"Agent 總覽", "新增 Agent", "排程設定", `role="dialog"`} {
+		if !strings.Contains(r.Body.String(), want) {
+			t.Fatalf("index missing %q", want)
+		}
+	}
+}
+
 func TestWebServerHidesAgentToken(t *testing.T) {
 	path := t.TempDir() + "/settings.yaml"
 	if err := SaveWorkflowSettings(path, WorkflowSettings{Agents: []CollaboratorConfig{{
