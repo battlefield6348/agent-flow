@@ -163,12 +163,17 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 					slog.Error("Failed to fetch notes after worker success", "mr_iid", mr.IID, "error", err)
 					return
 				}
+				latestNoteID := lastNoteID
+				latestNoteBody := ""
 				for _, note := range updatedNotes {
-					if note.ID > lastNoteID && note.Author == username && isValidCompletionNote(agentID, note.Body) {
-						if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
-							slog.Error("Failed to mark completed Todo as done", "todo_id", todo.ID, "error", err)
-						}
-						return
+					if note.Author == username && note.ID > latestNoteID {
+						latestNoteID = note.ID
+						latestNoteBody = note.Body
+					}
+				}
+				if latestNoteID > lastNoteID && isValidCompletionNote(agentID, latestNoteBody) {
+					if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+						slog.Error("Failed to mark completed Todo as done", "todo_id", todo.ID, "error", err)
 					}
 				}
 			})

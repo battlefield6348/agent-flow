@@ -301,6 +301,22 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 	})
 
 	t.Run("completion requires new role-valid bot note", func(t *testing.T) {
+		t.Run("leaves Todo open when a valid note is followed by an invalid note", func(t *testing.T) {
+			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 修正回覆\n已修正"}, {ID: 6, Author: "bot", Body: "## 其他留言"}},
+			}}
+			worker := newWorker()
+			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			(<-worker.inputCh).OnSuccess("完成")
+			if len(gl.MarkedTodoIDs) != 0 {
+				t.Fatalf("Todo completed despite newer invalid note: %v", gl.MarkedTodoIDs)
+			}
+		})
+
 		t.Run("leaves Todo open for an invalid new note", func(t *testing.T) {
 			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
 				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
