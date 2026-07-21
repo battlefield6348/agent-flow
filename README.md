@@ -72,7 +72,7 @@ make start
 
 ### Docker 啟動
 
-容器會安裝 `codex` 與 `claude`，並掛載宿主的專案目錄到 `/workspace`、Codex 認證到 `/root/.codex`，以及宿主的 Agy binary。先確認已登入 Codex，然後執行：
+容器會啟動 Agent Flow runner 與 Web，並掛載宿主的專案目錄到 `/workspace`、Codex 認證到 `/root/.codex`，以及宿主的 Agy binary。先確認已登入 Codex，再執行：
 
 ```bash
 docker compose up --build

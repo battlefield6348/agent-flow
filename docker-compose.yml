@@ -1,7 +1,15 @@
 services:
+  agent-flow:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ${HOME}/projects:/workspace
+      - ${HOME}/.codex:/root/.codex
+      - ${AGY_BIN:-${HOME}/.local/bin/agy}:/usr/local/bin/agy:ro
   web:
     build: .
     ports:
       - "127.0.0.1:8080:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

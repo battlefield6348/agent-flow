@@ -21,7 +21,7 @@ func main() {
 	const (
 		settingsPath = "data/settings.yaml"
 		logDir       = "logs"
-		listenAddr   = "127.0.0.1:8081"
+		listenAddr   = "0.0.0.0:8081"
 	)
 	settings, err := orchestrator.LoadWorkflowSettings(settingsPath)
 	if err != nil {
