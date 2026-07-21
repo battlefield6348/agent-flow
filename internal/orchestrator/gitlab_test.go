@@ -91,8 +91,8 @@ func TestHttpGitLabRepository_FetchMergeRequestNotes(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", r.Method)
 		}
-		if r.URL.Path != "/api/v4/projects/group/repo/merge_requests/7/notes" {
-			t.Errorf("expected path, got %s", r.URL.Path)
+		if r.URL.EscapedPath() != "/api/v4/projects/group%2Frepo/merge_requests/7/notes" {
+			t.Errorf("expected escaped path, got %s", r.URL.EscapedPath())
 		}
 		if r.Header.Get("PRIVATE-TOKEN") != "fake-token" {
 			t.Errorf("expected PRIVATE-TOKEN header")
@@ -115,5 +115,17 @@ func TestHttpGitLabRepository_FetchMergeRequestNotes(t *testing.T) {
 	notes, err := repo.FetchMergeRequestNotes(context.Background(), "group/repo", 7)
 	if err != nil || !reflect.DeepEqual(notes, []Note{{ID: 1, Body: "## 審查結論", Author: "reviewer"}}) {
 		t.Fatalf("notes=%+v err=%v", notes, err)
+	}
+}
+
+func TestHttpGitLabRepository_FetchMergeRequestNotes_ReturnsErrorForNonOKResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	repo := NewHttpGitLabRepository(server.URL, "fake-token")
+	if _, err := repo.FetchMergeRequestNotes(context.Background(), "group/repo", 7); err == nil {
+		t.Fatal("expected error for non-OK response")
 	}
 }
