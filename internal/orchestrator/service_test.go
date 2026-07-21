@@ -6,25 +6,39 @@ import (
 )
 
 type MockGitLabRepository struct {
-	Todos     []Todo
-	Pipelines []Pipeline
-	Notes     []Note
-	Err       error
+	Todos          []Todo
+	Pipelines      []Pipeline
+	Notes          []Note
+	NotesByCall    [][]Note
+	MarkedTodoIDs  []int
+	Username       string
+	Err            error
+	NoteFetchCount int
 }
 
 func (m *MockGitLabRepository) FetchPendingTodos(ctx context.Context) ([]Todo, error) {
 	return m.Todos, m.Err
 }
 func (m *MockGitLabRepository) MarkTodoAsDone(ctx context.Context, todoID int) error {
+	m.MarkedTodoIDs = append(m.MarkedTodoIDs, todoID)
 	return nil
 }
 func (m *MockGitLabRepository) GetUsername(ctx context.Context) (string, error) {
+	if m.Username != "" {
+		return m.Username, m.Err
+	}
 	return "mockuser", nil
 }
 func (m *MockGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error) {
 	return m.Pipelines, m.Err
 }
 func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
+	if m.NoteFetchCount < len(m.NotesByCall) {
+		notes := m.NotesByCall[m.NoteFetchCount]
+		m.NoteFetchCount++
+		return notes, m.Err
+	}
+	m.NoteFetchCount++
 	return m.Notes, m.Err
 }
 
@@ -161,15 +175,100 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 		WebURL: "http://gitlab.com/mr/101",
 	}
 
-	service.assignToWorker("coder", mr, "/local/path")
+	service.assignToWorker("coder", mr, "/local/path", nil)
 
 	select {
 	case sent := <-w.inputCh:
-		expected := "請開始處理 Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
+		expected := "請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
 		if sent.Text != expected {
 			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent.Text)
 		}
 	default:
 		t.Fatalf("預期有發送指令到 inputCh，但沒收到")
 	}
+}
+
+func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
+	todo := Todo{
+		ID:           1,
+		Project:      "group/project",
+		MergeRequest: MergeRequest{IID: 101, State: "opened", WebURL: "http://gitlab.com/mr/101", Author: "author1"},
+	}
+
+	newWorker := func() *Worker {
+		return &Worker{Config: CollaboratorConfig{ID: "coder", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
+	}
+
+	t.Run("coder skips non-fix todo", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}, Notes: []Note{{ID: 1, Body: "## 審查結論\n可以合併"}}}
+		worker := newWorker()
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
+			t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
+		}
+		select {
+		case <-worker.inputCh:
+			t.Fatal("coder received a non-fix todo")
+		default:
+		}
+	})
+
+	t.Run("coder dispatches requested-fix todo", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", Notes: []Note{{ID: 1, Body: "## 審查結論\n需修改後再審"}}}
+		worker := newWorker()
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(gl.MarkedTodoIDs) != 0 {
+			t.Fatalf("Todo completed before worker success: %v", gl.MarkedTodoIDs)
+		}
+		select {
+		case task := <-worker.inputCh:
+			if task.OnSuccess == nil {
+				t.Fatal("coder task has no completion callback")
+			}
+		default:
+			t.Fatal("coder did not receive requested-fix todo")
+		}
+	})
+
+	t.Run("completion requires new role-valid bot note", func(t *testing.T) {
+		t.Run("leaves Todo open for an invalid new note", func(t *testing.T) {
+			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 其他留言"}},
+			}}
+			worker := newWorker()
+			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			(<-worker.inputCh).OnSuccess("完成")
+			if len(gl.MarkedTodoIDs) != 0 {
+				t.Fatalf("Todo completed for invalid note: %v", gl.MarkedTodoIDs)
+			}
+		})
+
+		t.Run("marks Todo for a new role-valid note", func(t *testing.T) {
+			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
+				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 修正回覆\n已修正"}},
+			}}
+			worker := newWorker()
+			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			(<-worker.inputCh).OnSuccess("完成")
+			if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
+				t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
+			}
+		})
+	})
 }

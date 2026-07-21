@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	coderAgentID    = "coder"
+	reviewerAgentID = "reviewer"
+)
+
 // GitLabRepository 定義與 GitLab 交互的介面 (Port)
 type GitLabRepository interface {
 	FetchPendingTodos(ctx context.Context) ([]Todo, error)
@@ -96,6 +101,19 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			continue
 		}
 
+		var notes []Note
+		if agentID == coderAgentID {
+			notes, err = repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+			if err != nil {
+				slog.Error("Failed to fetch notes for coder Todo", "mr_iid", mr.IID, "error", err)
+				continue
+			}
+			if !hasRequestedChanges(notes) {
+				_ = repo.MarkTodoAsDone(ctx, todo.ID)
+				continue
+			}
+		}
+
 		// 檢查 CI 狀態
 		if s.CheckCISuccess() {
 			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
@@ -124,14 +142,64 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
 		if s.workerManager != nil {
-			s.assignToWorker(agentID, mr, localPath)
-			_ = repo.MarkTodoAsDone(ctx, todo.ID)
+			username, err := repo.GetUsername(ctx)
+			if err != nil {
+				slog.Error("Failed to get agent username", "agent_id", agentID, "error", err)
+				continue
+			}
+			if notes == nil {
+				notes, err = repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+				if err != nil {
+					slog.Error("Failed to fetch notes before assignment", "mr_iid", mr.IID, "error", err)
+					continue
+				}
+			}
+			lastNoteID := highestNoteIDByAuthor(notes, username)
+			s.assignToWorker(agentID, mr, localPath, func(string) {
+				updatedNotes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+				if err != nil {
+					slog.Error("Failed to fetch notes after worker success", "mr_iid", mr.IID, "error", err)
+					return
+				}
+				for _, note := range updatedNotes {
+					if note.ID > lastNoteID && note.Author == username && isValidCompletionNote(agentID, note.Body) {
+						_ = repo.MarkTodoAsDone(ctx, todo.ID)
+						return
+					}
+				}
+			})
 		} else {
 			slog.Info("Mock mode: task assignment", "agent_id", agentID, "mr_iid", mr.IID, "workspace", localPath)
 		}
 	}
 
 	return nil
+}
+
+func hasRequestedChanges(notes []Note) bool {
+	for _, note := range notes {
+		if (strings.HasPrefix(note.Body, "## 審查結論") || strings.HasPrefix(note.Body, "### 結論")) && strings.Contains(note.Body, "需修改後再審") {
+			return true
+		}
+	}
+	return false
+}
+
+func highestNoteIDByAuthor(notes []Note, username string) int {
+	lastID := 0
+	for _, note := range notes {
+		if note.Author == username && note.ID > lastID {
+			lastID = note.ID
+		}
+	}
+	return lastID
+}
+
+func isValidCompletionNote(agentID, body string) bool {
+	if agentID == coderAgentID {
+		return strings.HasPrefix(body, "## 修正回覆")
+	}
+	return agentID == reviewerAgentID && (strings.HasPrefix(body, "## 審查結論") || strings.HasPrefix(body, "### 結論"))
 }
 
 func (s *OrchestratorService) isAllowed(target string, allowedList []string) bool {
@@ -156,7 +224,7 @@ func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
 	return false
 }
 
-func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string) {
+func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, onSuccess func(string)) {
 	for _, w := range s.workerManager.Workers {
 		if w.Config.ID == agentID {
 			if w.Config.Workspace != localPath {
@@ -167,17 +235,20 @@ func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, lo
 				time.Sleep(15 * time.Second)
 			}
 			var actionName string
-			if agentID == "reviewer" {
+			if agentID == reviewerAgentID {
 				actionName = "評審"
 			} else {
 				actionName = "處理"
 			}
 			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
+			if agentID == coderAgentID {
+				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
+			}
 			if w.Config.PromptSuffix != "" {
 				instruction += w.Config.PromptSuffix
 			}
 			instruction += "\n"
-			w.SendInput(instruction)
+			w.SendTask(WorkerTask{Text: instruction, OnSuccess: onSuccess})
 			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
 		}
 	}
