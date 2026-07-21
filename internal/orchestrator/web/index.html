@@ -26,10 +26,54 @@
     const error = (message, type = 'error') => { const el = document.querySelector('#error'); el.textContent = message; el.className = type; };
     const statusLabel = agent => agent.busy ? '執行任務中' : agent.running ? '待命中' : '已停止';
     const statusClass = agent => agent.busy ? 'busy' : agent.running ? 'running' : 'stopped';
+    const agentDetailsOpen = new Map();
     const updateSummary = agents => {
       document.querySelector('#idle-count').textContent = agents.filter(agent => agent.running && !agent.busy).length;
       document.querySelector('#busy-count').textContent = agents.filter(agent => agent.busy).length;
       document.querySelector('#stopped-count').textContent = agents.filter(agent => !agent.running && !agent.busy).length;
+    };
+    const renderAgents = agents => {
+      const container = document.querySelector('#agents');
+      container.replaceChildren();
+      if (!agents.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = '目前查無 Agent。';
+        return container.append(empty);
+      }
+      agents.forEach(agent => {
+        const card = document.createElement('article');
+        card.className = 'agent';
+        const top = document.createElement('div');
+        top.className = 'agent-top';
+        const name = document.createElement('h3');
+        name.textContent = agent.name || agent.id;
+        const state = document.createElement('span');
+        state.className = `state ${statusClass(agent)}`;
+        state.textContent = statusLabel(agent);
+        top.append(name, state);
+        const details = document.createElement('details');
+        details.dataset.agentId = agent.id;
+        details.open = agentDetailsOpen.get(agent.id) || false;
+        const summary = document.createElement('summary');
+        summary.textContent = '詳細資料';
+        details.append(summary);
+        [['識別碼', agent.id], ['指令', agent.cmd], ['工作目錄', agent.workspace]].forEach(([label, value]) => {
+          const detail = document.createElement('p');
+          detail.textContent = `${label}：${value}`;
+          details.append(detail);
+        });
+        const restart = document.createElement('button');
+        restart.type = 'button';
+        restart.textContent = '重新啟動';
+        restart.addEventListener('click', () => restartAgent(agent.id));
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '刪除';
+        remove.addEventListener('click', () => deleteAgent(agent.id));
+        card.append(top, details, restart, remove);
+        container.append(card);
+      });
     };
     async function loadSettings() {
       const response = await fetch('/api/settings');
@@ -42,11 +86,12 @@
 	  document.querySelector('#allowed_mr_authors').value = (settings.allowed_mr_authors || []).join('\n');
     }
     async function refresh() {
+      document.querySelectorAll('#agents details').forEach(details => agentDetailsOpen.set(details.dataset.agentId, details.open));
       const response = await fetch('/api/agents');
       if (!response.ok) return error('無法取得 Agent 狀態。', 'error');
       const agents = await response.json();
       updateSummary(agents);
-      document.querySelector('#agents').innerHTML = agents.length ? agents.map(agent => `<article class="agent"><div class="agent-top"><h3>${agent.name || agent.id}</h3><span class="state ${statusClass(agent)}">${statusLabel(agent)}</span></div><details><summary>詳細資料</summary><p>識別碼：${agent.id}<br>指令：${agent.cmd}<br>工作目錄：${agent.workspace}</p></details><button type="button" onclick="restartAgent('${agent.id}')">重新啟動</button><button type="button" onclick="deleteAgent('${agent.id}')">刪除</button></article>`).join('') : '<div class="empty">目前查無 Agent。</div>';
+      renderAgents(agents);
     }
     document.querySelectorAll('[data-dialog]').forEach(button => button.onclick = () => document.querySelector(`#${button.dataset.dialog}`).showModal());
     document.querySelectorAll('.close').forEach(button => button.onclick = () => button.closest('dialog').close());

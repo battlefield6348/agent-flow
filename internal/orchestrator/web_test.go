@@ -15,10 +15,13 @@ func TestWebServerIndexIncludesDashboardControls(t *testing.T) {
 	if r.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", r.Code, r.Body.String())
 	}
-	for _, want := range []string{"Agent 總覽", "新增 Agent", "排程設定", `role="dialog"`, "statusClass", "updateSummary", "詳細資料"} {
+	for _, want := range []string{"Agent 總覽", "新增 Agent", "排程設定", `role="dialog"`, "statusClass", "updateSummary", "詳細資料", "document.createElement", "textContent", "addEventListener", "agentDetailsOpen"} {
 		if !strings.Contains(r.Body.String(), want) {
 			t.Fatalf("index missing %q", want)
 		}
+	}
+	if strings.Contains(r.Body.String(), `onclick="restartAgent`) {
+		t.Fatal("index uses inline restart handler")
 	}
 }
 
