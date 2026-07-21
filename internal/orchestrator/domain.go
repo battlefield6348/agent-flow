@@ -24,3 +24,9 @@ type Pipeline struct {
 	ID     int
 	Status string
 }
+
+type Note struct {
+	ID     int
+	Body   string
+	Author string
+}

@@ -130,6 +130,14 @@ type PipelineDTO struct {
 	SHA    string `json:"sha"`
 }
 
+type NoteDTO struct {
+	ID     int    `json:"id"`
+	Body   string `json:"body"`
+	Author struct {
+		Username string `json:"username"`
+	} `json:"author"`
+}
+
 func (c *Client) FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]PipelineDTO, error) {
 	encodedPath := url.PathEscape(projectPath)
 	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests/%d/pipelines", c.baseURL, encodedPath, mrIID)
@@ -154,4 +162,29 @@ func (c *Client) FetchMergeRequestPipelines(ctx context.Context, projectPath str
 		return nil, err
 	}
 	return pipelines, nil
+}
+
+func (c *Client) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]NoteDTO, error) {
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests/%d/notes", c.baseURL, url.PathEscape(projectPath), mrIID)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitLab API returned status: %s", resp.Status)
+	}
+
+	var notes []NoteDTO
+	if err := json.NewDecoder(resp.Body).Decode(&notes); err != nil {
+		return nil, err
+	}
+	return notes, nil
 }

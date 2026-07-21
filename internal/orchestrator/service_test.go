@@ -8,6 +8,7 @@ import (
 type MockGitLabRepository struct {
 	Todos     []Todo
 	Pipelines []Pipeline
+	Notes     []Note
 	Err       error
 }
 
@@ -22,6 +23,9 @@ func (m *MockGitLabRepository) GetUsername(ctx context.Context) (string, error) 
 }
 func (m *MockGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, projectPath string, mrIID int) ([]Pipeline, error) {
 	return m.Pipelines, m.Err
+}
+func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
+	return m.Notes, m.Err
 }
 
 type MockWorkspaceRepository struct {

@@ -74,3 +74,20 @@ func (r *HttpGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, p
 	}
 	return pipelines, nil
 }
+
+func (r *HttpGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
+	rawNotes, err := r.client.FetchMergeRequestNotes(ctx, projectPath, mrIID)
+	if err != nil {
+		return nil, err
+	}
+
+	notes := make([]Note, 0, len(rawNotes))
+	for _, rn := range rawNotes {
+		notes = append(notes, Note{
+			ID:     rn.ID,
+			Body:   rn.Body,
+			Author: rn.Author.Username,
+		})
+	}
+	return notes, nil
+}
