@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -10,6 +11,7 @@ type MockGitLabRepository struct {
 	Pipelines      []Pipeline
 	Notes          []Note
 	NotesByCall    [][]Note
+	NoteErrors     []error
 	MarkedTodoIDs  []int
 	Username       string
 	Err            error
@@ -33,13 +35,52 @@ func (m *MockGitLabRepository) FetchMergeRequestPipelines(ctx context.Context, p
 	return m.Pipelines, m.Err
 }
 func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, projectPath string, mrIID int) ([]Note, error) {
-	if m.NoteFetchCount < len(m.NotesByCall) {
-		notes := m.NotesByCall[m.NoteFetchCount]
-		m.NoteFetchCount++
-		return notes, m.Err
-	}
+	index := m.NoteFetchCount
 	m.NoteFetchCount++
-	return m.Notes, m.Err
+	err := m.Err
+	if index < len(m.NoteErrors) {
+		err = m.NoteErrors[index]
+	}
+	if index < len(m.NotesByCall) {
+		return m.NotesByCall[index], err
+	}
+	return m.Notes, err
+}
+
+func TestOrchestratorService_ReviewerCompletionLifecycle(t *testing.T) {
+	todo := Todo{ID: 2, Project: "group/project", MergeRequest: MergeRequest{IID: 102, State: "opened", WebURL: "http://gitlab.com/mr/102", Author: "author1"}}
+	gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "review-bot", NotesByCall: [][]Note{
+		{{ID: 4, Author: "review-bot", Body: "舊留言"}},
+		{{ID: 4, Author: "review-bot", Body: "舊留言"}, {ID: 5, Author: "review-bot", Body: "### 結論\n請修正"}},
+	}}
+	worker := &Worker{Config: CollaboratorConfig{ID: "reviewer", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+
+	if err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(gl.MarkedTodoIDs) != 0 {
+		t.Fatalf("Todo completed before reviewer success: %v", gl.MarkedTodoIDs)
+	}
+	(<-worker.inputCh).OnSuccess("完成")
+	if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
+		t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
+	}
+}
+
+func TestOrchestratorService_CompletionNoteFetchErrorLeavesTodoOpen(t *testing.T) {
+	todo := Todo{ID: 3, Project: "group/project", MergeRequest: MergeRequest{IID: 103, State: "opened", WebURL: "http://gitlab.com/mr/103", Author: "author1"}}
+	gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{{{ID: 4, Body: "## 審查結論\n需修改後再審"}}}, NoteErrors: []error{nil, errors.New("notes unavailable")}}
+	worker := &Worker{Config: CollaboratorConfig{ID: "coder", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
+	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+
+	if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	(<-worker.inputCh).OnSuccess("完成")
+	if len(gl.MarkedTodoIDs) != 0 {
+		t.Fatalf("Todo completed after note fetch error: %v", gl.MarkedTodoIDs)
+	}
 }
 
 type MockWorkspaceRepository struct {
