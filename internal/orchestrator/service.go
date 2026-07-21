@@ -109,7 +109,9 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				continue
 			}
 			if !hasRequestedChanges(notes) {
-				_ = repo.MarkTodoAsDone(ctx, todo.ID)
+				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+					slog.Error("Failed to mark coder Todo as done", "todo_id", todo.ID, "error", err)
+				}
 				continue
 			}
 		}
@@ -163,7 +165,9 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				}
 				for _, note := range updatedNotes {
 					if note.ID > lastNoteID && note.Author == username && isValidCompletionNote(agentID, note.Body) {
-						_ = repo.MarkTodoAsDone(ctx, todo.ID)
+						if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+							slog.Error("Failed to mark completed Todo as done", "todo_id", todo.ID, "error", err)
+						}
 						return
 					}
 				}
@@ -177,12 +181,15 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 }
 
 func hasRequestedChanges(notes []Note) bool {
+	latestID := 0
+	latestConclusion := ""
 	for _, note := range notes {
-		if (strings.HasPrefix(note.Body, "## 審查結論") || strings.HasPrefix(note.Body, "### 結論")) && strings.Contains(note.Body, "需修改後再審") {
-			return true
+		if note.ID > latestID && (strings.HasPrefix(note.Body, "## 審查結論") || strings.HasPrefix(note.Body, "### 結論")) {
+			latestID = note.ID
+			latestConclusion = note.Body
 		}
 	}
-	return false
+	return strings.Contains(latestConclusion, "需修改後再審")
 }
 
 func highestNoteIDByAuthor(notes []Note, username string) int {

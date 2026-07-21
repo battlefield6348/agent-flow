@@ -258,6 +258,27 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		}
 	})
 
+	t.Run("coder skips a requested fix superseded by approval", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}, Notes: []Note{
+			{ID: 1, Body: "## 審查結論\n需修改後再審"},
+			{ID: 2, Body: "### 結論\n可以合併"},
+		}}
+		worker := newWorker()
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
+			t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
+		}
+		select {
+		case <-worker.inputCh:
+			t.Fatal("coder received a Todo superseded by approval")
+		default:
+		}
+	})
+
 	t.Run("coder dispatches requested-fix todo", func(t *testing.T) {
 		gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", Notes: []Note{{ID: 1, Body: "## 審查結論\n需修改後再審"}}}
 		worker := newWorker()
