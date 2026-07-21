@@ -20,4 +20,5 @@ output/
 .vscode/
 .DS_Store
 .gemini/
+.superpowers/
 data/
