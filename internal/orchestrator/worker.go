@@ -390,9 +390,8 @@ func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInp
 		w.muLast.Lock()
 		w.lastOutput = fullText
 		w.muLast.Unlock()
-		return fullText
 	}
-	return ""
+	return fullText
 }
 
 // filterAndJoinLines 清理增量行並拼接成最終文本

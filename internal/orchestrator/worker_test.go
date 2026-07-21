@@ -50,6 +50,7 @@ func (m *MockTerminal) SendKeys(sessionID string, keys string, enter bool) error
 	m.sentKeys = append(m.sentKeys, keys)
 	if keys == "任務" {
 		m.taskStarted = true
+		m.captureCount = 0
 	}
 	return nil
 }
@@ -159,11 +160,12 @@ func TestTaskCompletionRequiresPaneChange(t *testing.T) {
 func TestWorkerTaskOnSuccess(t *testing.T) {
 	terminal := &MockTerminal{started: make(chan struct{})}
 	worker := NewWorker(CollaboratorConfig{ID: "worker", Cmd: "codex", Workspace: t.TempDir()}, t.TempDir(), terminal)
+	started := terminal.started
 	worker.Start()
 	defer worker.Stop()
 
 	select {
-	case <-terminal.started:
+	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("terminal did not start")
 	}
@@ -178,6 +180,36 @@ func TestWorkerTaskOnSuccess(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("OnSuccess was not called after task completion")
+	}
+}
+
+func TestWorkerTaskOnSuccessForDuplicateOutput(t *testing.T) {
+	terminal := &MockTerminal{started: make(chan struct{})}
+	worker := NewWorker(CollaboratorConfig{ID: "worker", Cmd: "codex", Workspace: t.TempDir()}, t.TempDir(), terminal)
+	started := terminal.started
+	worker.Start()
+	defer worker.Stop()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not start")
+	}
+
+	first := make(chan string, 1)
+	second := make(chan string, 1)
+	worker.SendTask(WorkerTask{Text: "任務", OnSuccess: func(output string) { first <- output }})
+	worker.SendTask(WorkerTask{Text: "任務", OnSuccess: func(output string) { second <- output }})
+
+	for _, called := range []chan string{first, second} {
+		select {
+		case output := <-called:
+			if output != "完成輸出" {
+				t.Fatalf("OnSuccess output = %q, want %q", output, "完成輸出")
+			}
+		case <-time.After(8 * time.Second):
+			t.Fatal("OnSuccess was not called after task completion")
+		}
 	}
 }
 
