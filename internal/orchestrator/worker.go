@@ -11,12 +11,17 @@ import (
 	"time"
 )
 
+type WorkerTask struct {
+	Text      string
+	OnSuccess func(string)
+}
+
 type Worker struct {
 	Config         CollaboratorConfig
 	LogDir         string
 	Terminal       Terminal
 	stopCh         chan struct{}
-	inputCh        chan string
+	inputCh        chan WorkerTask
 	outputCallback func(string)
 	lastOutput     string
 	muLast         sync.Mutex
@@ -57,7 +62,7 @@ func NewWorker(cfg CollaboratorConfig, logDir string, terminal Terminal) *Worker
 		LogDir:   logDir,
 		Terminal: terminal,
 		stopCh:   make(chan struct{}),
-		inputCh:  make(chan string, 10),
+		inputCh:  make(chan WorkerTask, 10),
 	}
 }
 
@@ -78,10 +83,14 @@ func (w *Worker) BuildPromptMsg(sessionID string) string {
 }
 
 func (w *Worker) SendInput(text string) {
+	w.SendTask(WorkerTask{Text: text})
+}
+
+func (w *Worker) SendTask(task WorkerTask) {
 	if w.Config.InputPrefix != "" {
-		text = w.Config.InputPrefix + text
+		task.Text = w.Config.InputPrefix + task.Text
 	}
-	w.inputCh <- text
+	w.inputCh <- task
 }
 
 func (w *Worker) Start() {
@@ -234,8 +243,8 @@ func (w *Worker) runProcess(stopCh <-chan struct{}) {
 	go func() {
 		for {
 			select {
-			case input := <-w.inputCh:
-				w.handleInput(input, sessionID)
+			case task := <-w.inputCh:
+				w.handleInput(task, sessionID)
 			case <-stopInput:
 				return
 			case <-stopCh:
@@ -264,9 +273,10 @@ func (w *Worker) runProcess(stopCh <-chan struct{}) {
 }
 
 // handleInput 處理來自通道的指令，並追蹤其忙碌狀態與結果輸出
-func (w *Worker) handleInput(input string, sessionID string) {
+func (w *Worker) handleInput(task WorkerTask, sessionID string) {
 	w.setBusy(true)
 	defer w.setBusy(false)
+	input := task.Text
 
 	slog.Info("Forwarding input to worker", "worker_id", sessionID, "input", input)
 
@@ -282,11 +292,14 @@ func (w *Worker) handleInput(input string, sessionID string) {
 	_ = w.Terminal.SendKeys(sessionID, "", true) // 額外的 Enter 確保 CLI 觸發執行
 
 	// 等待執行完成並提取輸出
-	if !w.pollUntilReady(3600, screenBefore) {
+	completed := w.pollUntilReady(3600, screenBefore)
+	if !completed {
 		slog.Warn("Polling timeout or interrupted", "worker_id", sessionID)
 	}
 
-	w.processAndSaveOutput(sessionID, nBefore, input)
+	if output := w.processAndSaveOutput(sessionID, nBefore, input); completed && output != "" && task.OnSuccess != nil {
+		task.OnSuccess(output)
+	}
 }
 
 // waitForReady 等待終端出現可輸入提示
@@ -346,11 +359,11 @@ func (w *Worker) getHistoryLineCount(sessionID string) int {
 }
 
 // processAndSaveOutput 提取增量歷史，進行清理過濾後保存至檔案並觸發回調
-func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInput string) {
+func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInput string) string {
 	linesAfter, err := w.Terminal.CaptureHistory(sessionID)
 	if err != nil {
 		slog.Error("Error getting terminal history", "worker_id", sessionID, "error", err)
-		return
+		return ""
 	}
 
 	var newLines []string
@@ -362,7 +375,7 @@ func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInp
 
 	fullText := w.filterAndJoinLines(newLines, originalInput)
 	if fullText == "" {
-		return
+		return ""
 	}
 
 	w.muLast.Lock()
@@ -377,7 +390,9 @@ func (w *Worker) processAndSaveOutput(sessionID string, nBefore int, originalInp
 		w.muLast.Lock()
 		w.lastOutput = fullText
 		w.muLast.Unlock()
+		return fullText
 	}
+	return ""
 }
 
 // filterAndJoinLines 清理增量行並拼接成最終文本

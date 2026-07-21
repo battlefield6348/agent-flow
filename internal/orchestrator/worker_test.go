@@ -15,6 +15,8 @@ type MockTerminal struct {
 	sentKeys      []string
 	startedEnv    []string
 	started       chan struct{}
+	taskStarted   bool
+	captureCount  int
 }
 
 func (m *MockTerminal) Start(ctx context.Context, sessionID string, workspace string, cmd string, env []string) error {
@@ -46,6 +48,9 @@ func (m *MockTerminal) SendKeys(sessionID string, keys string, enter bool) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sentKeys = append(m.sentKeys, keys)
+	if keys == "任務" {
+		m.taskStarted = true
+	}
 	return nil
 }
 
@@ -59,11 +64,25 @@ func (m *MockTerminal) GetSentKeys() []string {
 }
 
 func (m *MockTerminal) CapturePane(sessionID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.taskStarted {
+		m.captureCount++
+		if m.captureCount == 1 {
+			return "working", nil
+		}
+		return "完成\nType your message\n>", nil
+	}
 	// 回傳帶有提示符的畫面，以便 isPromptReady 判定為 ready
 	return "Type your message\n>", nil
 }
 
 func (m *MockTerminal) CaptureHistory(sessionID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.taskStarted {
+		return []string{">", "完成輸出"}, nil
+	}
 	return []string{">"}, nil
 }
 
@@ -134,6 +153,31 @@ func TestTaskCompletionRequiresPaneChange(t *testing.T) {
 	}
 	if !taskCompletionReady(true, 2, ">") {
 		t.Fatal("changed and stable ready prompt must complete the task")
+	}
+}
+
+func TestWorkerTaskOnSuccess(t *testing.T) {
+	terminal := &MockTerminal{started: make(chan struct{})}
+	worker := NewWorker(CollaboratorConfig{ID: "worker", Cmd: "codex", Workspace: t.TempDir()}, t.TempDir(), terminal)
+	worker.Start()
+	defer worker.Stop()
+
+	select {
+	case <-terminal.started:
+	case <-time.After(time.Second):
+		t.Fatal("terminal did not start")
+	}
+
+	called := make(chan string, 1)
+	worker.SendTask(WorkerTask{Text: "任務", OnSuccess: func(output string) { called <- output }})
+
+	select {
+	case output := <-called:
+		if output != "完成輸出" {
+			t.Fatalf("OnSuccess output = %q, want %q", output, "完成輸出")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("OnSuccess was not called after task completion")
 	}
 }
 

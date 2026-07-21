@@ -148,7 +148,7 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 			PromptSuffix: "，請立刻處理",
 			Workspace:    "/local/path",
 		},
-		inputCh: make(chan string, 10),
+		inputCh: make(chan WorkerTask, 10),
 	}
 
 	wm := &WorkerManager{
@@ -166,8 +166,8 @@ func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
 	select {
 	case sent := <-w.inputCh:
 		expected := "請開始處理 Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
-		if sent != expected {
-			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent)
+		if sent.Text != expected {
+			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent.Text)
 		}
 	default:
 		t.Fatalf("預期有發送指令到 inputCh，但沒收到")
