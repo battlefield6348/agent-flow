@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -22,13 +23,35 @@ type WorkflowSettings struct {
 }
 
 func LoadWorkflowSettings(path string) (WorkflowSettings, error) {
-	data, err := os.ReadFile(path)
+	candidatePaths := []string{
+		path,
+		"configs/config.yaml",
+		"configs/settings.yaml",
+		"data/settings.yaml",
+	}
+
+	var targetPath string
+	for _, p := range candidatePaths {
+		if p != "" {
+			if _, err := os.Stat(p); err == nil {
+				targetPath = p
+				break
+			}
+		}
+	}
+
+	if targetPath == "" {
+		targetPath = "configs/config.yaml"
+	}
+
+	data, err := os.ReadFile(targetPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return WorkflowSettings{}, nil
 	}
 	if err != nil {
 		return WorkflowSettings{}, err
 	}
+	slog.Info("已成功載入設定檔", "path", targetPath)
 	var settings WorkflowSettings
 	if err := yaml.Unmarshal(data, &settings); err != nil {
 		return WorkflowSettings{}, err

@@ -15,7 +15,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	const settingsPath = "data/settings.yaml"
+	const settingsPath = "configs/config.yaml"
 	settings, err := orchestrator.LoadWorkflowSettings(settingsPath)
 	if err != nil {
 		slog.Error("載入設定檔失敗", "error", err)
