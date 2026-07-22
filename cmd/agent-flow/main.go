@@ -3,25 +3,22 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"gemini-collaborator-go/internal/orchestrator"
 )
 
 func main() {
-	// 初始化結構化日誌 (預設輸出到 Stdout)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	const (
-		settingsPath = "data/settings.yaml"
-		listenAddr   = "0.0.0.0:8081"
-	)
+	const settingsPath = "data/settings.yaml"
 	settings, err := orchestrator.LoadWorkflowSettings(settingsPath)
 	if err != nil {
-		slog.Error("Failed to load workflow settings", "error", err)
+		slog.Error("載入設定檔失敗", "error", err)
 		os.Exit(1)
 	}
 	gitlabURL := settings.GitLabURL
@@ -32,7 +29,7 @@ func main() {
 	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName)
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, caoDispatcher)
 	service.SetCheckCISuccess(settings.CheckCISuccess)
-	slog.Info("Initialized Agent Flow with CLI Agent Orchestrator (CAO)")
+	slog.Info("成功初始化 Agent Flow (結合 CLI Agent Orchestrator)")
 
 	interval := time.Duration(settings.IntervalSeconds) * time.Second
 	if interval <= 0 {
@@ -40,12 +37,12 @@ func main() {
 	}
 	scheduler := orchestrator.NewScheduler(service, interval, settings.AllowedProjects, settings.AllowedMRAuthors, settings.Agents, gitlabURL)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	scheduler.Start(ctx)
-	slog.Info("Agent Flow web UI is active", "address", listenAddr)
-	if err := http.ListenAndServe(listenAddr, orchestrator.NewWebServer(settingsPath, scheduler)); err != nil {
-		slog.Error("Web server stopped", "error", err)
-	}
+	slog.Info("Agent Flow 背景輪詢服務已啟動...")
+
+	<-ctx.Done()
+	slog.Info("收到關閉訊號，Agent Flow 服務正在停止...")
 }
