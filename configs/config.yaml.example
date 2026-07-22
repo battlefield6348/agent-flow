@@ -1,4 +1,10 @@
-listen_addr: "127.0.0.1:8080"
-settings_path: "data/settings.yaml"
-logs:
-  path: "./logs"
+# Agent Flow 設定檔範例
+gitlab_url: "https://gitlab.example.com"
+interval_seconds: 60
+check_ci_success: true
+cao_bin_path: "cao"
+cao_session_name: "cao-main"
+allowed_projects:
+  - "group/project-a"
+allowed_mr_authors:
+  - "developer1"
