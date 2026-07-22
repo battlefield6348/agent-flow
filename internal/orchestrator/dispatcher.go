@@ -67,8 +67,35 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 	return c.dispatchViaCLI(ctx, input)
 }
 
+func (c *CaoDispatcher) getTargetSessionName(ctx context.Context) string {
+	target := c.SessionName
+	activeSession := c.findActiveSessionName(ctx)
+	if activeSession != "" {
+		slog.Info("動態匹配到目前活躍中的 CAO Session", "active_session", activeSession)
+		return activeSession
+	}
+	return target
+}
+
+func (c *CaoDispatcher) findActiveSessionName(ctx context.Context) string {
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && strings.HasPrefix(fields[0], "cao-") {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
 func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskInput) error {
-	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, c.SessionName)
+	targetSession := c.getTargetSessionName(ctx)
+	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, targetSession)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, terminalsURL, nil)
 	if err != nil {
 		return err
@@ -91,7 +118,6 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 		return fmt.Errorf("找不到可用的 supervisor terminal id")
 	}
 
-	// 派發給 Conductor/Supervisor Terminal (通常為列表的第一個 Terminal)
 	supervisorID := terminals[0].ID
 	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, supervisorID)
 	payload := map[string]string{
@@ -123,19 +149,20 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 }
 
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
-	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", c.SessionName, input.Instruction)
+	targetSession := c.getTargetSessionName(ctx)
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
 	if input.Workspace != "" {
 		cmd.Dir = input.Workspace
 	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
+		slog.Info("成功透過 CLI 將任務送達 CAO Session", "session", targetSession)
 		return nil
 	}
 
 	outputStr := string(out)
-	// 若提示找不到 Session 或 Terminal，直接叫 cao launch 啟動由 Supervisor 掌管的主 Session
 	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
-		slog.Info("偵測到 CAO Supervisor Session 未建立，自動啟動 CAO Supervisor...", "session", c.SessionName)
+		slog.Info("偵測到 CAO Session 未建立，自動 launch 啟動全新 Session...", "session", c.SessionName)
 
 		launchArgs := []string{
 			"launch",
@@ -154,11 +181,11 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 
 		launchOut, launchErr := launchCmd.CombinedOutput()
 		if launchErr == nil {
-			slog.Info("成功自動啟動 CAO Supervisor Session 並派發任務", "session", c.SessionName)
+			slog.Info("成功自動啟動 CAO Session 並派發任務", "session", c.SessionName)
 			return nil
 		}
 
-		return fmt.Errorf("自動啟動 CAO Supervisor 失敗: %w, 輸出: %s", launchErr, string(launchOut))
+		return fmt.Errorf("自動啟動 CAO Session 失敗: %w, 輸出: %s", launchErr, string(launchOut))
 	}
 
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
