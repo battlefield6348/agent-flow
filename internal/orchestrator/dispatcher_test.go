@@ -32,6 +32,10 @@ func (m *MockTaskDispatcher) IsBusy(ctx context.Context, agentID string) (bool, 
 	return false, nil
 }
 
+func (m *MockTaskDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
+	return nil
+}
+
 func TestNewCaoDispatcher_Defaults(t *testing.T) {
 	dispatcher := NewCaoDispatcher("", "", "")
 	if dispatcher.CaoBinPath != "cao" {

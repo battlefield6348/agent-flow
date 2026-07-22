@@ -1,4 +1,4 @@
-# Agent Flow 設定檔範例 (模式 A：個案 Agent 獨立分流派發)
+# Agent Flow 設定檔範例 (完全配置驅動：靈活自訂 Session、Profile 與 AI Provider)
 gitlab_url: "https://gitlab.example.com"
 interval_seconds: 60
 check_ci_success: true
@@ -11,12 +11,16 @@ allowed_projects:
 allowed_mr_authors:
   - "developer1"
 
-# 各個 Agent 角色、專屬 GitLab Token 與目標 CAO Session 分流設定
+# 完全由使用者在 config 中自由決定 Agent 識別碼、Session 名稱、Agent Profile 與 Provider
 agents:
   - id: "reviewer"
     gitlab_token: "glpat-reviewer-token-xxxxxx"
-    cao_session_name: "gitlab-reviewer"
+    cao_session_name: "gitlab-reviewer"         # 自訂要建立/對接的 CAO Session 名稱
+    cao_agent_profile: "review_supervisor"      # 自訂 CAO Agent Profile (如 review_supervisor, developer)
+    cao_provider: "kiro_cli"                    # 自訂 AI Provider (如 codex, kiro_cli, claude_code)
 
   - id: "coder"
     gitlab_token: "glpat-coder-token-yyyyyy"
-    cao_session_name: "gitlab-coder"
+    cao_session_name: "gitlab-coder"            # 自訂要建立/對接的 CAO Session 名稱
+    cao_agent_profile: "code_supervisor"        # 自訂 CAO Agent Profile
+    cao_provider: "codex"                       # 自訂 AI Provider

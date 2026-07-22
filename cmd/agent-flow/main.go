@@ -40,6 +40,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 依據設定檔動態檢查與啟動指定的 CAO Sessions
+	if err := caoDispatcher.EnsureSessions(ctx, settings.Agents); err != nil {
+		slog.Warn("檢查/啟動 CAO Sessions 時發生非阻斷式錯誤", "error", err)
+	}
+
 	scheduler.Start(ctx)
 	slog.Info("Agent Flow 背景輪詢服務已啟動...")
 

@@ -27,9 +27,10 @@ type DispatchTaskInput struct {
 type TaskDispatcher interface {
 	DispatchTask(ctx context.Context, input DispatchTaskInput) error
 	IsBusy(ctx context.Context, agentID string) (bool, error)
+	EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error
 }
 
-// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發
+// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發與動態 Session 管理
 type CaoDispatcher struct {
 	CaoBinPath  string
 	SessionName string
@@ -53,6 +54,51 @@ func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher 
 		ServerURL:   strings.TrimSuffix(serverURL, "/"),
 		HTTPClient:  &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
+func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
+	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
+	activeStr := string(activeOut)
+
+	for _, agent := range agents {
+		sessionName := agent.CaoSessionName
+		if sessionName == "" {
+			sessionName = fmt.Sprintf("gitlab-%s", agent.ID)
+		}
+
+		if strings.Contains(activeStr, sessionName) {
+			slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
+			continue
+		}
+
+		profile := agent.CaoAgentProfile
+		if profile == "" {
+			if agent.ID == "reviewer" {
+				profile = "review_supervisor"
+			} else if agent.ID == "coder" {
+				profile = "code_supervisor"
+			} else {
+				profile = "developer"
+			}
+		}
+
+		slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", agent.CaoProvider)
+
+		args := []string{"launch", "--agents", profile, "--session-name", sessionName, "--headless", "--auto-approve"}
+		if agent.CaoProvider != "" {
+			args = append(args, "--provider", agent.CaoProvider)
+		}
+
+		cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
+		} else {
+			slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
+		}
+	}
+	return nil
 }
 
 func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInput) error {

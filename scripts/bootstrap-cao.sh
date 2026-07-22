@@ -2,11 +2,11 @@
 set -e
 
 # ==============================================================================
-# CAO (CLI Agent Orchestrator) 環境初始化與 Session 自動建立腳本
+# CAO (CLI Agent Orchestrator) 本地環境診斷腳本
 # ==============================================================================
 
 echo "============================================================"
-echo "🚀 開始初始化 Agent Flow 與 CAO (CLI Agent Orchestrator) 環境..."
+echo "🚀 正在檢查 Agent Flow 與 CAO 運行環境..."
 echo "============================================================"
 
 # 1. 檢查 cao CLI 工具是否已安裝
@@ -26,28 +26,6 @@ else
     echo "💡 提示: 請確保在獨立終端機啟動過 'cao-server' 服務。"
 fi
 
-# 3. 自動檢查與建立目標 CAO Sessions
-REVIEWER_SESSION="${CAO_REVIEWER_SESSION:-gitlab-reviewer}"
-CODER_SESSION="${CAO_CODER_SESSION:-gitlab-coder}"
-
-ACTIVE_SESSIONS=$(cao session list 2>/dev/null || true)
-
-# 初始化 Reviewer Session
-if echo "$ACTIVE_SESSIONS" | grep -q "$REVIEWER_SESSION"; then
-    echo "✅ 發現已存在 Reviewer Session: $REVIEWER_SESSION"
-else
-    echo "🔨 正在初始化 Reviewer CAO Session: $REVIEWER_SESSION..."
-    cao launch --agents review_supervisor --session-name "$REVIEWER_SESSION" --headless --auto-approve || true
-fi
-
-# 初始化 Coder Session
-if echo "$ACTIVE_SESSIONS" | grep -q "$CODER_SESSION"; then
-    echo "✅ 發現已存在 Coder Session: $CODER_SESSION"
-else
-    echo "🔨 正在初始化 Coder CAO Session: $CODER_SESSION..."
-    cao launch --agents code_supervisor --session-name "$CODER_SESSION" --headless --auto-approve || true
-fi
-
 echo "============================================================"
-echo "🎉 CAO 環境與 Sessions 初始化完畢！Ready to run Agent Flow."
+echo "🎉 環境診斷完成！所有 CAO Sessions 將由 configs/config.yaml 動態驅動建立。"
 echo "============================================================"
