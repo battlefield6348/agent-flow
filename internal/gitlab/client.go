@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -17,8 +19,19 @@ type Client struct {
 }
 
 func NewClient(baseURL, token string) *Client {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		if envURL := os.Getenv("GITLAB_URL"); envURL != "" {
+			baseURL = envURL
+		} else if envURL := os.Getenv("CI_SERVER_URL"); envURL != "" {
+			baseURL = envURL
+		}
+	}
+	if baseURL != "" && !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "https://" + baseURL
+	}
 	return &Client{
-		baseURL:    baseURL,
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		token:      token,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
