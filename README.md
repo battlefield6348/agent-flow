@@ -42,10 +42,10 @@ cao-server &
 
 ```mermaid
 flowchart LR
-  GitLab[GitLab Todos API] --> AgentFlow[Agent Flow Daemon (Go)]
-  AgentFlow --> CAODispatcher[CAO Task Dispatcher]
-  CAODispatcher --> CAOServer[cao-server REST / CLI]
-  CAOServer --> Supervisor[CAO Supervisor Session (tmux)]
+  GitLab["GitLab Todos API"] --> AgentFlow["Agent Flow Daemon (Go)"]
+  AgentFlow --> CAODispatcher["CAO Task Dispatcher"]
+  CAODispatcher --> CAOServer["cao-server REST / CLI"]
+  CAOServer --> Supervisor["CAO Supervisor Session (tmux)"]
 ```
 
 ---
