@@ -50,4 +50,5 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("收到關閉訊號，Agent Flow 服務正在停止...")
+	_ = caoDispatcher.ShutdownSessions(context.Background())
 }

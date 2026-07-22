@@ -1,4 +1,4 @@
-.PHONY: build start setup cao-status clean fmt test check-tools
+.PHONY: build start stop setup cao-status clean fmt test check-tools
 
 # 基本變數設定
 BINARY_NAME=agent-flow
@@ -13,6 +13,13 @@ start: setup
 	@echo "🚀 正在啟動 Agent Flow 輪詢服務..."
 	@GOTOOLCHAIN=local go run ${MAIN_PATH}
 
+# 一鍵優雅關閉 (終止背景服務並清理所有 CAO/tmux Sessions)
+stop:
+	@echo "🛑 正在關閉 Agent Flow 與清理 CAO/tmux Sessions..."
+	@cao shutdown 2>/dev/null || true
+	@pkill -f "agent-flow" 2>/dev/null || true
+	@echo "✅ 所有服務與 Sessions 已完成優雅關閉。"
+
 # 編譯二進位執行檔
 build:
 	@echo "🔨 正在編譯 agent-flow..."
@@ -23,7 +30,7 @@ cao-status:
 	@cao session list
 
 # 清理編譯檔與暫存檔
-clean:
+clean: stop
 	@echo "🧹 清理編譯檔與暫存檔..."
 	@rm -f ${BINARY_NAME}
 	@echo "✅ 清理完成。"

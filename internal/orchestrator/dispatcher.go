@@ -122,6 +122,19 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 	return nil
 }
 
+// ShutdownSessions 執行 CAO/tmux 的優雅關閉與清理
+func (c *CaoDispatcher) ShutdownSessions(ctx context.Context) error {
+	slog.Info("正在優雅關閉 CAO/tmux Sessions...")
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "shutdown")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("執行 cao shutdown 時回傳非零狀態", "error", err, "output", string(out))
+		return err
+	}
+	slog.Info("已成功優雅關閉所有 CAO/tmux Sessions")
+	return nil
+}
+
 func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInput) error {
 	if c.ServerURL != "" {
 		err := c.dispatchViaHTTP(ctx, input)
