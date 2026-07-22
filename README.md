@@ -1,6 +1,6 @@
 # Agent Flow：GitLab Todo 驅動的本地 AI 多代理編排器 (CAO 整合版)
 
-[前置需求與 CAO 安裝](#前置需求與-cao-安裝) · [快速啟動](#快速啟動) · [配置說明](#配置說明) · [系統架構](#系統架構) · [開發與測試](#開發與測試)
+[前置需求與 CAO 安裝](#前置需求與-cao-安裝) · [CAO Profiles 與 Skills 設定](#-cao-profiles-與-skills-設定指南) · [配置說明](#配置說明) · [快速啟動](#快速啟動) · [系統架構](#系統架構)
 
 Agent Flow 是一個以 Go 語言開發的輕量級本地多代理編排器。它會輪詢 GitLab Merge Request 的 Todos，將工作直接派發給 AWS Labs `cli-agent-orchestrator` (CAO) 的 Supervisor 終端機進程，並以 GitLab 留言驗證任務結果。
 
@@ -34,6 +34,54 @@ cao --version
 
 ```bash
 cao-server &
+```
+
+---
+
+## 🧩 CAO Profiles 與 Skills 設定指南
+
+在 CAO 體系中，**Profile** 定義了 Agent 的角色與權限，而 **Skills** 為 Agent 提供了擴充的工具與工作流。
+
+### 1. Agent Profiles 管理 (`cao profile`)
+
+查看目前系統中已建立的 Agent Profiles：
+
+```bash
+cao profile list
+```
+
+建立或修改專屬 Agent Profile (例如 `review_supervisor` 或 `code_supervisor`)：
+
+```bash
+# 檢視特定 Profile 設定
+cao profile show review_supervisor
+
+# 建立自訂 Agent Profile (指定角色與工具權限)
+cao profile create review_supervisor \
+  --role "Reviewer Supervisor" \
+  --allowed-tools "@builtin,fs_*,execute_bash"
+```
+
+建立完成後，即可在 `configs/config.yaml` 的 `cao_agent_profile` 欄位填入該 Profile 名稱。
+
+### 2. Skills 技能管理 (`cao skills`)
+
+CAO 支援透過 Skills 擴充 Agent 的自動化能力 (例如帶入特定的 Code Review 規範與專案範本)。
+
+查看目前已安裝的 Skills 清單：
+
+```bash
+cao skills list
+```
+
+安裝新的 Skill (從本地目錄、Git URL 或遠端商店)：
+
+```bash
+# 從本地目錄安裝專案技能
+cao skills install ./path/to/my-skill
+
+# 從遠端 Git 儲存庫安裝技能
+cao skills install https://github.com/user/my-agent-skill
 ```
 
 ---
