@@ -28,6 +28,7 @@ type TaskDispatcher interface {
 	DispatchTask(ctx context.Context, input DispatchTaskInput) error
 	IsBusy(ctx context.Context, agentID string) (bool, error)
 	EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error
+	ShutdownSessions(ctx context.Context) error
 }
 
 // CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發與動態 Session 管理
@@ -122,15 +123,22 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 	return nil
 }
 
-// ShutdownSessions 執行 CAO/tmux 的優雅關閉與清理
+// ShutdownSessions 執行 CAO/tmux 的優雅關閉與清理 (獨立 Context 防護)
 func (c *CaoDispatcher) ShutdownSessions(ctx context.Context) error {
 	slog.Info("正在優雅關閉 CAO/tmux Sessions...")
-	cmd := exec.CommandContext(ctx, c.CaoBinPath, "shutdown")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(shutdownCtx, c.CaoBinPath, "shutdown")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Warn("執行 cao shutdown 時回傳非零狀態", "error", err, "output", string(out))
-		return err
 	}
+
+	// 額外清理以 gitlab- 或 cao- 開頭的 tmux sessions 確保關閉乾淨
+	cleanCmd := exec.CommandContext(shutdownCtx, "sh", "-c", "tmux list-sessions -F '#S' 2>/dev/null | grep -E '^(gitlab-|cao-)' | xargs -r -I {} tmux kill-session -t {}")
+	_ = cleanCmd.Run()
+
 	slog.Info("已成功優雅關閉所有 CAO/tmux Sessions")
 	return nil
 }

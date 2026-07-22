@@ -36,6 +36,10 @@ func (m *MockTaskDispatcher) EnsureSessions(ctx context.Context, agents []Collab
 	return nil
 }
 
+func (m *MockTaskDispatcher) ShutdownSessions(ctx context.Context) error {
+	return nil
+}
+
 func TestNewCaoDispatcher_Defaults(t *testing.T) {
 	dispatcher := NewCaoDispatcher("", "", "")
 	if dispatcher.CaoBinPath != "cao" {
