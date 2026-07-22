@@ -10,6 +10,7 @@ import (
 
 type WorkflowSettings struct {
 	GitLabURL        string               `yaml:"gitlab_url" json:"gitlab_url"`
+	GitLabToken      string               `yaml:"gitlab_token" json:"gitlab_token"`
 	IntervalSeconds  int                  `yaml:"interval_seconds" json:"interval_seconds"`
 	CheckCISuccess   bool                 `yaml:"check_ci_success" json:"check_ci_success"`
 	AllowedProjects  []string             `yaml:"allowed_projects" json:"allowed_projects"`

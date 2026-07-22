@@ -7,7 +7,7 @@ import (
 )
 
 func TestSchedulerStartAgentRejectsDuplicate(t *testing.T) {
-	s := NewScheduler(nil, time.Hour, nil, nil, nil, "https://gitlab.example.com")
+	s := NewScheduler(nil, time.Hour, nil, nil, []CollaboratorConfig{}, "https://gitlab.example.com", "")
 	s.Start(context.Background())
 	if err := s.StartAgent(CollaboratorConfig{ID: "coder", GitLabToken: "token"}); err != nil {
 		t.Fatal(err)
@@ -18,7 +18,7 @@ func TestSchedulerStartAgentRejectsDuplicate(t *testing.T) {
 }
 
 func TestSchedulerStopAgentRemovesCancellation(t *testing.T) {
-	s := NewScheduler(nil, time.Hour, nil, nil, nil, "https://gitlab.example.com")
+	s := NewScheduler(nil, time.Hour, nil, nil, []CollaboratorConfig{}, "https://gitlab.example.com", "")
 	s.Start(context.Background())
 	if err := s.StartAgent(CollaboratorConfig{ID: "coder"}); err != nil {
 		t.Fatal(err)
