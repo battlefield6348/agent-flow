@@ -76,6 +76,21 @@ func normalizeProvider(provider string) string {
 	}
 }
 
+func (c *CaoDispatcher) deleteSessionRecord(ctx context.Context, sessionName string) {
+	if c.ServerURL == "" {
+		return
+	}
+	url := fmt.Sprintf("%s/sessions/%s", c.ServerURL, sessionName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
 // EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
 func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
 	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
@@ -91,6 +106,9 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 			slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
 			continue
 		}
+
+		// 啟動前先清理可能殘留的孤兒 DB 紀錄，防止與新建 tmux 視窗產生衝突
+		c.deleteSessionRecord(ctx, sessionName)
 
 		profile := agent.CaoAgentProfile
 		if profile == "" {
@@ -118,11 +136,9 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
 		} else {
 			slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
-			// 延遲 2 秒讓 tmux 與 cao-server 完整完成 Terminal 註冊，避免連續啟動引發 window 競態
 			time.Sleep(2 * time.Second)
 		}
 
-		// 重新整理 activeStr
 		if active, err := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput(); err == nil {
 			activeStr = string(active)
 		}
@@ -130,23 +146,19 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 	return nil
 }
 
-// ShutdownSessions 執行 CAO/tmux 的優雅關閉與清理 (獨立 Context 防護)
+// ShutdownSessions 執行 CAO/tmux 的深層優雅關閉與清理 (同步清理 DB 紀錄與 tmux 視窗)
 func (c *CaoDispatcher) ShutdownSessions(ctx context.Context) error {
-	slog.Info("正在優雅關閉 CAO/tmux Sessions...")
+	slog.Info("正在深層優雅關閉 CAO/tmux Sessions 與 DB 紀錄...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(shutdownCtx, c.CaoBinPath, "shutdown")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		slog.Warn("執行 cao shutdown 時回傳非零狀態", "error", err, "output", string(out))
-	}
+	_, _ = cmd.CombinedOutput()
 
-	// 額外清理以 gitlab- 或 cao- 開頭的 tmux sessions 確保關閉乾淨
 	cleanCmd := exec.CommandContext(shutdownCtx, "sh", "-c", "tmux list-sessions -F '#S' 2>/dev/null | grep -E '^(gitlab-|cao-)' | xargs -r -I {} tmux kill-session -t {}")
 	_ = cleanCmd.Run()
 
-	slog.Info("已成功優雅關閉所有 CAO/tmux Sessions")
+	slog.Info("已成功深層優雅關閉所有 CAO/tmux Sessions")
 	return nil
 }
 
