@@ -32,13 +32,17 @@ func main() {
 
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, "")
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
-	terminal := orchestrator.NewTmuxTerminal()
-	workerManager := orchestrator.NewWorkerManager(settings.Agents, logDir, terminal)
 
-	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
+	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName)
+	var workerManager *orchestrator.WorkerManager
+	if len(settings.Agents) > 0 {
+		terminal := orchestrator.NewTmuxTerminal()
+		workerManager = orchestrator.NewWorkerManager(settings.Agents, logDir, terminal)
+	}
+
+	service := orchestrator.NewOrchestratorServiceWithDispatcher(gitlabRepo, workspaceRepo, caoDispatcher)
 	service.SetCheckCISuccess(settings.CheckCISuccess)
-	slog.Info("Starting local Workers in tmux...")
-	workerManager.StartAll()
+	slog.Info("Initialized Agent Flow with CLI Agent Orchestrator (CAO)")
 
 	interval := time.Duration(settings.IntervalSeconds) * time.Second
 	if interval <= 0 {

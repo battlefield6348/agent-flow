@@ -33,6 +33,7 @@ type OrchestratorService struct {
 	gitlabRepo     GitLabRepository
 	workspaceRepo  WorkspaceRepository
 	workerManager  *WorkerManager
+	dispatcher     TaskDispatcher
 	checkCISuccess bool
 	mu             sync.RWMutex
 }
@@ -42,6 +43,14 @@ func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *Wor
 		gitlabRepo:    gl,
 		workspaceRepo: ws,
 		workerManager: wm,
+	}
+}
+
+func NewOrchestratorServiceWithDispatcher(gl GitLabRepository, ws WorkspaceRepository, dispatcher TaskDispatcher) *OrchestratorService {
+	return &OrchestratorService{
+		gitlabRepo:    gl,
+		workspaceRepo: ws,
+		dispatcher:    dispatcher,
 	}
 }
 
@@ -95,8 +104,14 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			continue
 		}
 
-		// 檢查 Worker 忙碌狀態以實現背壓控流，避免資源競爭或重複指派
-		if s.workerManager != nil && s.isWorkerBusy(agentID) {
+		// 檢查忙碌狀態以實現背壓控流，避免資源競爭或重複指派
+		if s.dispatcher != nil {
+			busy, err := s.dispatcher.IsBusy(ctx, agentID)
+			if err == nil && busy {
+				slog.Info("Agent dispatcher is busy, postponing MR", "agent_id", agentID, "mr_iid", mr.IID)
+				continue
+			}
+		} else if s.workerManager != nil && s.isWorkerBusy(agentID) {
 			slog.Info("Worker is busy, postponing MR", "worker_id", agentID, "mr_iid", mr.IID)
 			continue
 		}
@@ -142,8 +157,32 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			continue
 		}
 
-		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
-		if s.workerManager != nil {
+		// 分派任務給 TaskDispatcher 或底層 Worker
+		if s.dispatcher != nil {
+			var actionName string
+			if agentID == reviewerAgentID {
+				actionName = "評審"
+			} else {
+				actionName = "處理"
+			}
+			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
+			if agentID == coderAgentID {
+				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
+			}
+
+			err := s.dispatcher.DispatchTask(ctx, DispatchTaskInput{
+				AgentID:     agentID,
+				Workspace:   localPath,
+				Instruction: instruction,
+				MRIID:       mr.IID,
+				MRWebURL:    mr.WebURL,
+			})
+			if err != nil {
+				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "error", err)
+			} else {
+				slog.Info("Successfully dispatched task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID)
+			}
+		} else if s.workerManager != nil {
 			username, err := repo.GetUsername(ctx)
 			if err != nil {
 				slog.Error("Failed to get agent username", "agent_id", agentID, "error", err)

@@ -350,3 +350,37 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		})
 	})
 }
+
+func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
+	todo := Todo{ID: 10, Project: "group/proj", MergeRequest: MergeRequest{IID: 200, State: "opened", WebURL: "http://gitlab.com/mr/200", Author: "author1"}}
+	gl := &MockGitLabRepository{Todos: []Todo{todo}}
+	ws := &MockWorkspaceRepository{Path: "/workspace/proj"}
+
+	t.Run("busy dispatcher postpones task", func(t *testing.T) {
+		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": true}}
+		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("busy 時不應指派任務，但指派了 %d 個", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("idle dispatcher assigns task", func(t *testing.T) {
+		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": false}}
+		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("期望指派 1 個任務，但得到了 %d 個", len(dispatcher.DispatchedTasks))
+		}
+		task := dispatcher.DispatchedTasks[0]
+		if task.AgentID != "reviewer" || task.MRIID != 200 || task.Workspace != "/workspace/proj" {
+			t.Errorf("派發任務內容不符合期望: %+v", task)
+		}
+	})
+}
