@@ -118,6 +118,13 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
 		} else {
 			slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
+			// 延遲 2 秒讓 tmux 與 cao-server 完整完成 Terminal 註冊，避免連續啟動引發 window 競態
+			time.Sleep(2 * time.Second)
+		}
+
+		// 重新整理 activeStr
+		if active, err := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput(); err == nil {
+			activeStr = string(active)
 		}
 	}
 	return nil
