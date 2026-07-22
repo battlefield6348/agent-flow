@@ -28,7 +28,7 @@ type TaskDispatcher interface {
 	IsBusy(ctx context.Context, agentID string) (bool, error)
 }
 
-// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面
+// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，直連 Supervisor/Conductor
 type CaoDispatcher struct {
 	CaoBinPath  string
 	SessionName string
@@ -58,7 +58,7 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 	if c.ServerURL != "" {
 		err := c.dispatchViaHTTP(ctx, input)
 		if err == nil {
-			slog.Info("成功透過 cao-server HTTP API 派發任務", "session", c.SessionName)
+			slog.Info("成功透過 cao-server HTTP API 直連 Supervisor 派發任務", "session", c.SessionName)
 			return nil
 		}
 		slog.Warn("透過 cao-server HTTP API 派發失敗，降級使用 CLI 執行", "error", err)
@@ -88,11 +88,12 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&terminals); err != nil || len(terminals) == 0 {
-		return fmt.Errorf("找不到可用的 terminal id")
+		return fmt.Errorf("找不到可用的 supervisor terminal id")
 	}
 
-	terminalID := terminals[0].ID
-	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, terminalID)
+	// 派發給 Conductor/Supervisor Terminal (通常為列表的第一個 Terminal)
+	supervisorID := terminals[0].ID
+	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, supervisorID)
 	payload := map[string]string{
 		"message": input.Instruction,
 	}
@@ -132,17 +133,12 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 	}
 
 	outputStr := string(out)
-	// 若提示找不到 Session 或 Terminal，自動呼叫 cao launch 初始化並啟動 Agent Session
+	// 若提示找不到 Session 或 Terminal，直接叫 cao launch 啟動由 Supervisor 掌管的主 Session
 	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
-		agentProfile := input.AgentID
-		if agentProfile == "" {
-			agentProfile = "developer"
-		}
-		slog.Info("偵測到 Session 未建立 Terminal，自動執行 cao launch 初始化 Session...", "session", c.SessionName, "agent_profile", agentProfile)
+		slog.Info("偵測到 CAO Supervisor Session 未建立，自動啟動 CAO Supervisor...", "session", c.SessionName)
 
 		launchArgs := []string{
 			"launch",
-			"--agents", agentProfile,
 			"--session-name", c.SessionName,
 			"--headless",
 		}
@@ -158,11 +154,11 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 
 		launchOut, launchErr := launchCmd.CombinedOutput()
 		if launchErr == nil {
-			slog.Info("成功自動啟動並初始化 cao Session", "session", c.SessionName)
+			slog.Info("成功自動啟動 CAO Supervisor Session 並派發任務", "session", c.SessionName)
 			return nil
 		}
 
-		return fmt.Errorf("自動啟動 cao session 失敗: %w, 輸出: %s", launchErr, string(launchOut))
+		return fmt.Errorf("自動啟動 CAO Supervisor 失敗: %w, 輸出: %s", launchErr, string(launchOut))
 	}
 
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
