@@ -194,6 +194,19 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 			t.Fatalf("coder expected 1 task, got %d", len(dispatcher.DispatchedTasks))
 		}
 	})
+
+	t.Run("coder dispatches mentioned todo without conclusion header", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", Notes: []Note{{ID: 1, Body: "@coder 請協助重構此模組"}}}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("coder expected 1 task for direct mention, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
 }
 
 func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {

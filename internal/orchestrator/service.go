@@ -194,6 +194,10 @@ func hasRequestedChanges(notes []Note) bool {
 			latestConclusion = note.Body
 		}
 	}
+	// 若尚未發起過審查結論 (如一般標註 @coder 留言)，預設允許 Coder 進行處理
+	if latestConclusion == "" {
+		return true
+	}
 	return strings.Contains(latestConclusion, "需修改後再審")
 }
 
