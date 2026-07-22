@@ -48,10 +48,17 @@ func TestNewCaoDispatcher_Defaults(t *testing.T) {
 func TestCaoDispatcher_HTTP(t *testing.T) {
 	t.Run("DispatchTask via HTTP Success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/sessions/cao-main/send" {
-				t.Errorf("期望 URL 包含 /sessions/cao-main/send，但得到 %s", r.URL.Path)
+			if r.URL.Path == "/sessions/cao-main/terminals" {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[{"id": "term-1"}]`))
+				return
 			}
-			w.WriteHeader(http.StatusOK)
+			if r.URL.Path == "/terminals/term-1/input" {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"success": true}`))
+				return
+			}
+			http.NotFound(w, r)
 		}))
 		defer server.Close()
 

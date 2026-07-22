@@ -28,7 +28,7 @@ type TaskDispatcher interface {
 	IsBusy(ctx context.Context, agentID string) (bool, error)
 }
 
-// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，支援 HTTP API 與 CLI 雙模式
+// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面
 type CaoDispatcher struct {
 	CaoBinPath  string
 	SessionName string
@@ -68,21 +68,12 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 }
 
 func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskInput) error {
-	url := fmt.Sprintf("%s/sessions/%s/send", c.ServerURL, c.SessionName)
-	payload := map[string]string{
-		"message":   input.Instruction,
-		"workspace": input.Workspace,
-	}
-	body, err := json.Marshal(payload)
+	// 嘗試從 cao-server 取得專屬 Terminal
+	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, c.SessionName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, terminalsURL, nil)
 	if err != nil {
 		return err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -90,12 +81,45 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET terminals HTTP %d", resp.StatusCode)
+	}
+
+	var terminals []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&terminals); err != nil || len(terminals) == 0 {
+		return fmt.Errorf("找不到可用的 terminal id")
+	}
+
+	terminalID := terminals[0].ID
+	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, terminalID)
+	payload := map[string]string{
+		"message": input.Instruction,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, inputURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+
+	postResp, err := c.HTTPClient.Do(postReq)
+	if err != nil {
+		return err
+	}
+	defer postResp.Body.Close()
+
+	if postResp.StatusCode >= 200 && postResp.StatusCode < 300 {
 		return nil
 	}
 
-	respBody, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	respBody, _ := io.ReadAll(postResp.Body)
+	return fmt.Errorf("POST input HTTP %d: %s", postResp.StatusCode, string(respBody))
 }
 
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
@@ -104,10 +128,34 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 		cmd.Dir = input.Workspace
 	}
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, string(out))
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	outputStr := string(out)
+	// 若提示找不到 Terminal，自動嘗試執行 launch 初始化 session
+	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
+		slog.Info("偵測到 Session 無可用 Terminal，嘗試自動啟動/初始化 Session...", "session", c.SessionName)
+		launchCmd := exec.CommandContext(ctx, c.CaoBinPath, "launch", "--session", c.SessionName)
+		if input.Workspace != "" {
+			launchCmd.Dir = input.Workspace
+		}
+		_ = launchCmd.Run()
+
+		// 重新發送任務
+		retryCmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", c.SessionName, input.Instruction)
+		if input.Workspace != "" {
+			retryCmd.Dir = input.Workspace
+		}
+		retryOut, retryErr := retryCmd.CombinedOutput()
+		if retryErr == nil {
+			return nil
+		}
+		outputStr = string(retryOut)
+		err = retryErr
+	}
+
+	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
 }
 
 func (c *CaoDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error) {
