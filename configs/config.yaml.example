@@ -4,6 +4,7 @@ interval_seconds: 60
 check_ci_success: true
 cao_bin_path: "cao"
 cao_session_name: "cao-main"
+cao_server_url: "http://localhost:9889"
 allowed_projects:
   - "group/project-a"
 allowed_mr_authors:

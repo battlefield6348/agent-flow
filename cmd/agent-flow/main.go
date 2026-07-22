@@ -26,7 +26,7 @@ func main() {
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, "")
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
 
-	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName)
+	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName, settings.CaoServerURL)
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, caoDispatcher)
 	service.SetCheckCISuccess(settings.CheckCISuccess)
 	slog.Info("成功初始化 Agent Flow (結合 CLI Agent Orchestrator)")

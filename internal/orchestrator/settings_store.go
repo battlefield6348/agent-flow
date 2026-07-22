@@ -16,6 +16,7 @@ type WorkflowSettings struct {
 	AllowedMRAuthors []string             `yaml:"allowed_mr_authors" json:"allowed_mr_authors"`
 	CaoBinPath       string               `yaml:"cao_bin_path" json:"cao_bin_path"`
 	CaoSessionName   string               `yaml:"cao_session_name" json:"cao_session_name"`
+	CaoServerURL     string               `yaml:"cao_server_url" json:"cao_server_url"`
 	Agents           []CollaboratorConfig `yaml:"agents" json:"-"`
 }
 
