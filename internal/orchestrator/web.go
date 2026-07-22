@@ -12,13 +12,12 @@ var webFiles embed.FS
 
 type WebServer struct {
 	settingsPath string
-	workers      *WorkerManager
 	scheduler    *Scheduler
 	mu           sync.Mutex
 }
 
-func NewWebServer(settingsPath string, workers *WorkerManager, scheduler *Scheduler) http.Handler {
-	s := &WebServer{settingsPath: settingsPath, workers: workers, scheduler: scheduler}
+func NewWebServer(settingsPath string, scheduler *Scheduler) http.Handler {
+	s := &WebServer{settingsPath: settingsPath, scheduler: scheduler}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
@@ -26,7 +25,6 @@ func NewWebServer(settingsPath string, workers *WorkerManager, scheduler *Schedu
 	mux.HandleFunc("GET /api/agents", s.getAgents)
 	mux.HandleFunc("POST /api/agents", s.addAgent)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.deleteAgent)
-	mux.HandleFunc("POST /api/agents/restart", s.restartAgent)
 	return mux
 }
 
@@ -59,17 +57,6 @@ func (s *WebServer) deleteAgent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
-	}
-	if worker := s.workers.Find(id); worker != nil {
-		worker.Stop()
-		s.workers.mu.Lock()
-		for i, candidate := range s.workers.Workers {
-			if candidate == worker {
-				s.workers.Workers = append(s.workers.Workers[:i], s.workers.Workers[i+1:]...)
-				break
-			}
-		}
-		s.workers.mu.Unlock()
 	}
 	if s.scheduler != nil {
 		_ = s.scheduler.StopAgent(id)
@@ -124,7 +111,7 @@ func (s *WebServer) putSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *WebServer) getAgents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.workers.Statuses())
+	writeJSON(w, http.StatusOK, []any{})
 }
 
 func (s *WebServer) addAgent(w http.ResponseWriter, r *http.Request) {
@@ -133,8 +120,8 @@ func (s *WebServer) addAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if agent.ID == "" || agent.Cmd == "" || agent.Workspace == "" || agent.GitLabToken == "" {
-		http.Error(w, "id, cmd, workspace, and gitlab_token are required", http.StatusBadRequest)
+	if agent.ID == "" || agent.Workspace == "" {
+		http.Error(w, "id and workspace are required", http.StatusBadRequest)
 		return
 	}
 	if len(agent.Skills) == 0 {
@@ -158,42 +145,13 @@ func (s *WebServer) addAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if err := s.workers.AddAndStart(agent); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	if s.scheduler != nil {
 		if err := s.scheduler.StartAgent(agent); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
-	for _, status := range s.workers.Statuses() {
-		if status.ID == agent.ID {
-			writeJSON(w, http.StatusCreated, status)
-			return
-		}
-	}
 	w.WriteHeader(http.StatusCreated)
-}
-
-func (s *WebServer) restartAgent(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	if id == "" {
-		http.Error(w, "agent id is required", http.StatusBadRequest)
-		return
-	}
-	if err := s.workers.Restart(id); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	for _, status := range s.workers.Statuses() {
-		if status.ID == id {
-			writeJSON(w, http.StatusOK, status)
-			return
-		}
-	}
-	w.WriteHeader(http.StatusOK)
 }
 
 var errDuplicateAgent = &duplicateAgentError{}

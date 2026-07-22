@@ -9,7 +9,7 @@ import (
 )
 
 func TestWebServerIndexIncludesDashboardControls(t *testing.T) {
-	h := NewWebServer(t.TempDir()+"/settings.yaml", NewWorkerManager(nil, t.TempDir(), &MockTerminal{}), nil)
+	h := NewWebServer(t.TempDir()+"/settings.yaml", nil)
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
 	if r.Code != http.StatusOK {
@@ -20,9 +20,6 @@ func TestWebServerIndexIncludesDashboardControls(t *testing.T) {
 			t.Fatalf("index missing %q", want)
 		}
 	}
-	if strings.Contains(r.Body.String(), `onclick="restartAgent`) {
-		t.Fatal("index uses inline restart handler")
-	}
 }
 
 func TestWebServerHidesAgentToken(t *testing.T) {
@@ -32,7 +29,7 @@ func TestWebServerHidesAgentToken(t *testing.T) {
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	h := NewWebServer(path, NewWorkerManager(nil, t.TempDir(), &MockTerminal{}), nil)
+	h := NewWebServer(path, nil)
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
 	if r.Code != http.StatusOK {
@@ -45,13 +42,12 @@ func TestWebServerHidesAgentToken(t *testing.T) {
 	}
 }
 
-func TestWebServerDeletesAgentAndContainer(t *testing.T) {
+func TestWebServerDeletesAgent(t *testing.T) {
 	path := t.TempDir() + "/settings.yaml"
 	if err := SaveWorkflowSettings(path, WorkflowSettings{Agents: []CollaboratorConfig{{ID: "agent-a", Cmd: "codex", Workspace: t.TempDir(), GitLabToken: "token"}}}); err != nil {
 		t.Fatal(err)
 	}
-	workers := NewWorkerManager([]CollaboratorConfig{{ID: "agent-a", Cmd: "codex", Workspace: t.TempDir()}}, t.TempDir(), &MockTerminal{})
-	h := NewWebServer(path, workers, nil)
+	h := NewWebServer(path, nil)
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodDelete, "/api/agents/agent-a", nil))
 	if r.Code != http.StatusNoContent {
@@ -65,8 +61,7 @@ func TestWebServerDeletesAgentAndContainer(t *testing.T) {
 
 func TestWebServerAddsAgent(t *testing.T) {
 	path := t.TempDir() + "/settings.yaml"
-	workers := NewWorkerManager(nil, t.TempDir(), &MockTerminal{})
-	h := NewWebServer(path, workers, nil)
+	h := NewWebServer(path, nil)
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/agents", strings.NewReader(`{"id":"coder","cmd":"echo","workspace":"/tmp","gitlab_token":"secret"}`)))
 	if r.Code != http.StatusCreated {
@@ -80,8 +75,7 @@ func TestWebServerAddsAgent(t *testing.T) {
 
 func TestWebServerAddsReviewerWithReviewSkill(t *testing.T) {
 	path := t.TempDir() + "/settings.yaml"
-	workers := NewWorkerManager(nil, t.TempDir(), &MockTerminal{})
-	h := NewWebServer(path, workers, nil)
+	h := NewWebServer(path, nil)
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/agents", strings.NewReader(`{"id":"reviewer","cmd":"agy","workspace":"/tmp","gitlab_token":"secret"}`)))
 	if r.Code != http.StatusCreated {
@@ -102,21 +96,5 @@ func TestDashboardLoadsStoredSettings(t *testing.T) {
 		if !strings.Contains(string(page), want) {
 			t.Fatalf("dashboard missing %q", want)
 		}
-	}
-}
-
-func TestWebServerRestartsAgent(t *testing.T) {
-	workers := NewWorkerManager(nil, t.TempDir(), &MockTerminal{})
-	if err := workers.AddAndStart(CollaboratorConfig{ID: "coder", Cmd: "echo", Workspace: t.TempDir()}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(workers.StopAll)
-	workers.Find("coder").Stop()
-
-	h := NewWebServer(t.TempDir()+"/settings.yaml", workers, nil)
-	r := httptest.NewRecorder()
-	h.ServeHTTP(r, httptest.NewRequest(http.MethodPost, "/api/agents/restart?id=coder", nil))
-	if r.Code != http.StatusOK {
-		t.Fatalf("code=%d body=%s", r.Code, r.Body.String())
 	}
 }
