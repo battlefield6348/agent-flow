@@ -28,7 +28,7 @@ type TaskDispatcher interface {
 	IsBusy(ctx context.Context, agentID string) (bool, error)
 }
 
-// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，直連 Supervisor/Conductor
+// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發
 type CaoDispatcher struct {
 	CaoBinPath  string
 	SessionName string
@@ -58,23 +58,22 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 	if c.ServerURL != "" {
 		err := c.dispatchViaHTTP(ctx, input)
 		if err == nil {
-			slog.Info("成功透過 cao-server HTTP API 直連 Supervisor 派發任務", "session", c.SessionName)
+			slog.Info("成功透過 cao-server HTTP API 送達任務訊息", "session", c.SessionName)
 			return nil
 		}
-		slog.Debug("cao-server HTTP 端點未在線或尚未建立 Session，轉由 CLI 模式派發", "reason", err)
+		slog.Debug("cao-server HTTP 派發未成功，轉由 CLI 模式發送", "reason", err)
 	}
 
 	return c.dispatchViaCLI(ctx, input)
 }
 
 func (c *CaoDispatcher) getTargetSessionName(ctx context.Context) string {
-	target := c.SessionName
 	activeSession := c.findActiveSessionName(ctx)
 	if activeSession != "" {
 		slog.Info("動態匹配到目前活躍中的 CAO Session", "active_session", activeSession)
 		return activeSession
 	}
-	return target
+	return c.SessionName
 }
 
 func (c *CaoDispatcher) findActiveSessionName(ctx context.Context) string {
@@ -162,30 +161,7 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 
 	outputStr := string(out)
 	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
-		slog.Info("偵測到 CAO Session 未建立，自動 launch 啟動全新 Session...", "session", c.SessionName)
-
-		launchArgs := []string{
-			"launch",
-			"--session-name", c.SessionName,
-			"--headless",
-		}
-		if input.Workspace != "" {
-			launchArgs = append(launchArgs, "--working-directory", input.Workspace)
-		}
-		launchArgs = append(launchArgs, input.Instruction)
-
-		launchCmd := exec.CommandContext(ctx, c.CaoBinPath, launchArgs...)
-		if input.Workspace != "" {
-			launchCmd.Dir = input.Workspace
-		}
-
-		launchOut, launchErr := launchCmd.CombinedOutput()
-		if launchErr == nil {
-			slog.Info("成功自動啟動 CAO Session 並派發任務", "session", c.SessionName)
-			return nil
-		}
-
-		return fmt.Errorf("自動啟動 CAO Session 失敗: %w, 輸出: %s", launchErr, string(launchOut))
+		return fmt.Errorf("未檢測到運作中的 CAO Session (%s)，請先在終端機執行 cao launch 啟動 Session", targetSession)
 	}
 
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
