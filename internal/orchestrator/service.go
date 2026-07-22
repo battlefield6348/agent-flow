@@ -170,6 +170,11 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "error", err)
 			} else {
 				slog.Info("Successfully dispatched task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID)
+				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+					slog.Error("Failed to mark Todo as done after dispatch", "todo_id", todo.ID, "error", err)
+				} else {
+					slog.Info("Marked Todo as done in GitLab", "todo_id", todo.ID, "mr_iid", mr.IID)
+				}
 			}
 		} else {
 			slog.Info("Mock mode: task assignment", "agent_id", agentID, "mr_iid", mr.IID, "workspace", localPath)
