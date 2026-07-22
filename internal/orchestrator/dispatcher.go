@@ -68,7 +68,6 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 }
 
 func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskInput) error {
-	// 嘗試從 cao-server 取得專屬 Terminal
 	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, c.SessionName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, terminalsURL, nil)
 	if err != nil {
@@ -133,26 +132,37 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 	}
 
 	outputStr := string(out)
-	// 若提示找不到 Terminal，自動嘗試執行 launch 初始化 session
+	// 若提示找不到 Session 或 Terminal，自動呼叫 cao launch 初始化並啟動 Agent Session
 	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
-		slog.Info("偵測到 Session 無可用 Terminal，嘗試自動啟動/初始化 Session...", "session", c.SessionName)
-		launchCmd := exec.CommandContext(ctx, c.CaoBinPath, "launch", "--session", c.SessionName)
+		agentProfile := input.AgentID
+		if agentProfile == "" {
+			agentProfile = "developer"
+		}
+		slog.Info("偵測到 Session 未建立 Terminal，自動執行 cao launch 初始化 Session...", "session", c.SessionName, "agent_profile", agentProfile)
+
+		launchArgs := []string{
+			"launch",
+			"--agents", agentProfile,
+			"--session-name", c.SessionName,
+			"--headless",
+		}
+		if input.Workspace != "" {
+			launchArgs = append(launchArgs, "--working-directory", input.Workspace)
+		}
+		launchArgs = append(launchArgs, input.Instruction)
+
+		launchCmd := exec.CommandContext(ctx, c.CaoBinPath, launchArgs...)
 		if input.Workspace != "" {
 			launchCmd.Dir = input.Workspace
 		}
-		_ = launchCmd.Run()
 
-		// 重新發送任務
-		retryCmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", c.SessionName, input.Instruction)
-		if input.Workspace != "" {
-			retryCmd.Dir = input.Workspace
-		}
-		retryOut, retryErr := retryCmd.CombinedOutput()
-		if retryErr == nil {
+		launchOut, launchErr := launchCmd.CombinedOutput()
+		if launchErr == nil {
+			slog.Info("成功自動啟動並初始化 cao Session", "session", c.SessionName)
 			return nil
 		}
-		outputStr = string(retryOut)
-		err = retryErr
+
+		return fmt.Errorf("自動啟動 cao session 失敗: %w, 輸出: %s", launchErr, string(launchOut))
 	}
 
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
