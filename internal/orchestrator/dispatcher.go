@@ -15,11 +15,12 @@ import (
 
 // DispatchTaskInput 封裝發送給 Agent 的任務資訊
 type DispatchTaskInput struct {
-	AgentID     string
-	Workspace   string
-	Instruction string
-	MRIID       int
-	MRWebURL    string
+	AgentID        string
+	Workspace      string
+	Instruction    string
+	MRIID          int
+	MRWebURL       string
+	CaoSessionName string
 }
 
 // TaskDispatcher 定義與 Agent 派發工具互動的介面
@@ -58,7 +59,7 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 	if c.ServerURL != "" {
 		err := c.dispatchViaHTTP(ctx, input)
 		if err == nil {
-			slog.Info("成功透過 cao-server HTTP API 送達任務訊息", "session", c.SessionName)
+			slog.Info("成功透過 cao-server HTTP API 送達任務訊息", "session", c.getTargetSessionName(ctx, input.CaoSessionName))
 			return nil
 		}
 		slog.Debug("cao-server HTTP 派發未成功，轉由 CLI 模式發送", "reason", err)
@@ -67,7 +68,10 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 	return c.dispatchViaCLI(ctx, input)
 }
 
-func (c *CaoDispatcher) getTargetSessionName(ctx context.Context) string {
+func (c *CaoDispatcher) getTargetSessionName(ctx context.Context, requestedSession string) string {
+	if requestedSession != "" {
+		return requestedSession
+	}
 	activeSession := c.findActiveSessionName(ctx)
 	if activeSession != "" {
 		slog.Info("動態匹配到目前活躍中的 CAO Session", "active_session", activeSession)
@@ -93,7 +97,7 @@ func (c *CaoDispatcher) findActiveSessionName(ctx context.Context) string {
 }
 
 func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskInput) error {
-	targetSession := c.getTargetSessionName(ctx)
+	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
 	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, targetSession)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, terminalsURL, nil)
 	if err != nil {
@@ -148,7 +152,7 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 }
 
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
-	targetSession := c.getTargetSessionName(ctx)
+	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
 	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
 	if input.Workspace != "" {
 		cmd.Dir = input.Workspace

@@ -65,7 +65,7 @@ func (s *OrchestratorService) CheckCISuccess() bool {
 }
 
 // ScanAndAssignForAgent 針對特定的 Agent 執行掃描與任務分派的核心業務邏輯
-func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string) error {
+func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string, caoSessionName string) error {
 	slog.Debug("Scanning GitLab Todos", "agent_id", agentID)
 	todos, err := repo.FetchPendingTodos(ctx)
 	if err != nil {
@@ -160,11 +160,12 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			}
 
 			err := s.dispatcher.DispatchTask(ctx, DispatchTaskInput{
-				AgentID:     agentID,
-				Workspace:   localPath,
-				Instruction: instruction,
-				MRIID:       mr.IID,
-				MRWebURL:    mr.WebURL,
+				AgentID:        agentID,
+				Workspace:      localPath,
+				Instruction:    instruction,
+				MRIID:          mr.IID,
+				MRWebURL:       mr.WebURL,
+				CaoSessionName: caoSessionName,
 			})
 			if err != nil {
 				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "error", err)
