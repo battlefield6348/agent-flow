@@ -26,8 +26,8 @@ type Scheduler struct {
 func NewScheduler(service *OrchestratorService, interval time.Duration, allowedProjects, allowedAuthors []string, collaborators []CollaboratorConfig, gitlabURL, gitlabToken string) *Scheduler {
 	if collaborators == nil {
 		collaborators = []CollaboratorConfig{
-			{ID: "reviewer", Name: "Reviewer Agent"},
-			{ID: "coder", Name: "Coder Agent"},
+			{ID: "reviewer"},
+			{ID: "coder"},
 		}
 	}
 	return &Scheduler{

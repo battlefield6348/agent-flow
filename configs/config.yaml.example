@@ -11,11 +11,9 @@ allowed_projects:
 allowed_mr_authors:
   - "developer1"
 
-# 多組 Agent 角色與各自的 GitLab Token 配置
+# 各個 Agent 角色及其專屬的 GitLab Token 配置
 agents:
   - id: "reviewer"
-    name: "Reviewer Agent"
     gitlab_token: "glpat-reviewer-token-xxxxxx"
   - id: "coder"
-    name: "Coder Agent"
     gitlab_token: "glpat-coder-token-yyyyyy"
