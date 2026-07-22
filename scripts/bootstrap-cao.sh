@@ -37,7 +37,7 @@ if echo "$ACTIVE_SESSIONS" | grep -q "$REVIEWER_SESSION"; then
     echo "✅ 發現已存在 Reviewer Session: $REVIEWER_SESSION"
 else
     echo "🔨 正在初始化 Reviewer CAO Session: $REVIEWER_SESSION..."
-    cao launch --agents review_supervisor --session-name "$REVIEWER_SESSION" --headless "Reviewer Agent Session Initialized" || true
+    cao launch --agents review_supervisor --session-name "$REVIEWER_SESSION" --headless --auto-approve "Reviewer Agent Session Initialized" || true
 fi
 
 # 初始化 Coder Session
@@ -45,7 +45,7 @@ if echo "$ACTIVE_SESSIONS" | grep -q "$CODER_SESSION"; then
     echo "✅ 發現已存在 Coder Session: $CODER_SESSION"
 else
     echo "🔨 正在初始化 Coder CAO Session: $CODER_SESSION..."
-    cao launch --agents code_supervisor --session-name "$CODER_SESSION" --headless "Coder Agent Session Initialized" || true
+    cao launch --agents code_supervisor --session-name "$CODER_SESSION" --headless --auto-approve "Coder Agent Session Initialized" || true
 fi
 
 echo "============================================================"
