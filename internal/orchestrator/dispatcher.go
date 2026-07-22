@@ -61,7 +61,7 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 			slog.Info("成功透過 cao-server HTTP API 直連 Supervisor 派發任務", "session", c.SessionName)
 			return nil
 		}
-		slog.Warn("透過 cao-server HTTP API 派發失敗，降級使用 CLI 執行", "error", err)
+		slog.Debug("cao-server HTTP 端點未在線或尚未建立 Session，轉由 CLI 模式派發", "reason", err)
 	}
 
 	return c.dispatchViaCLI(ctx, input)
