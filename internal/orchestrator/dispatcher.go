@@ -56,6 +56,25 @@ func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher 
 	}
 }
 
+// normalizeProvider 將常規/常見別名規範化為 cao 支援的 Provider 名稱
+func normalizeProvider(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch p {
+	case "agy", "antigravity", "antigravity cli", "antigravity_cli":
+		return "antigravity_cli"
+	case "kiro", "kiro cli", "kiro_cli":
+		return "kiro_cli"
+	case "claude", "claude code", "claude_code":
+		return "claude_code"
+	case "cursor", "cursor cli", "cursor_cli":
+		return "cursor_cli"
+	case "copilot", "copilot cli", "copilot_cli":
+		return "copilot_cli"
+	default:
+		return p
+	}
+}
+
 // EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
 func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
 	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
@@ -83,11 +102,13 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 			}
 		}
 
-		slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", agent.CaoProvider)
+		provider := normalizeProvider(agent.CaoProvider)
+
+		slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", provider)
 
 		args := []string{"launch", "--agents", profile, "--session-name", sessionName, "--headless", "--auto-approve"}
-		if agent.CaoProvider != "" {
-			args = append(args, "--provider", agent.CaoProvider)
+		if provider != "" {
+			args = append(args, "--provider", provider)
 		}
 
 		cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
