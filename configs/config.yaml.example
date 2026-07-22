@@ -1,9 +1,9 @@
-# Agent Flow 設定檔範例
+# Agent Flow 設定檔範例 (模式 A：個案 Agent 獨立分流派發)
 gitlab_url: "https://gitlab.example.com"
 interval_seconds: 60
 check_ci_success: true
-cao_bin_path: "cao"
-cao_session_name: "cao-main"
+
+# cao-server 連線位址
 cao_server_url: "http://localhost:9889"
 
 allowed_projects:
@@ -11,9 +11,12 @@ allowed_projects:
 allowed_mr_authors:
   - "developer1"
 
-# 各個 Agent 角色及其專屬的 GitLab Token 配置
+# 各個 Agent 角色、專屬 GitLab Token 與目標 CAO Session 分流設定
 agents:
   - id: "reviewer"
     gitlab_token: "glpat-reviewer-token-xxxxxx"
+    cao_session_name: "cao-reviewer-session"
+
   - id: "coder"
     gitlab_token: "glpat-coder-token-yyyyyy"
+    cao_session_name: "cao-coder-session"
