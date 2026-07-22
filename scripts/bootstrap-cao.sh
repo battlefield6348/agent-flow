@@ -27,8 +27,8 @@ else
 fi
 
 # 3. 自動檢查與建立目標 CAO Sessions
-REVIEWER_SESSION="${CAO_REVIEWER_SESSION:-cao-reviewer-session}"
-CODER_SESSION="${CAO_CODER_SESSION:-cao-coder-session}"
+REVIEWER_SESSION="${CAO_REVIEWER_SESSION:-gitlab-reviewer}"
+CODER_SESSION="${CAO_CODER_SESSION:-gitlab-coder}"
 
 ACTIVE_SESSIONS=$(cao session list 2>/dev/null || true)
 

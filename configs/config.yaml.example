@@ -15,8 +15,8 @@ allowed_mr_authors:
 agents:
   - id: "reviewer"
     gitlab_token: "glpat-reviewer-token-xxxxxx"
-    cao_session_name: "cao-reviewer-session"
+    cao_session_name: "gitlab-reviewer"
 
   - id: "coder"
     gitlab_token: "glpat-coder-token-yyyyyy"
-    cao_session_name: "cao-coder-session"
+    cao_session_name: "gitlab-coder"
