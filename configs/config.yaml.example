@@ -5,7 +5,17 @@ check_ci_success: true
 cao_bin_path: "cao"
 cao_session_name: "cao-main"
 cao_server_url: "http://localhost:9889"
+
 allowed_projects:
   - "group/project-a"
 allowed_mr_authors:
   - "developer1"
+
+# 多組 Agent 角色與各自的 GitLab Token 配置
+agents:
+  - id: "reviewer"
+    name: "Reviewer Agent"
+    gitlab_token: "glpat-reviewer-token-xxxxxx"
+  - id: "coder"
+    name: "Coder Agent"
+    gitlab_token: "glpat-coder-token-yyyyyy"
