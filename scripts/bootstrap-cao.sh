@@ -22,8 +22,26 @@ echo "🔍 檢查 cao-server 連線狀態 ($CAO_SERVER_URL)..."
 if curl -sf "$CAO_SERVER_URL/sessions" > /dev/null 2>&1; then
     echo "✅ cao-server 已在背景正常運作中！"
 else
-    echo "⚠️ 警告: 未能連線至 cao-server ($CAO_SERVER_URL)。"
-    echo "💡 提示: 請確保在獨立終端機啟動過 'cao-server' 服務。"
+    echo "⚠️ 偵測到 cao-server 未啟動，嘗試在背景自動啟動..."
+    if command -v cao-server &> /dev/null; then
+        nohup cao-server > /dev/null 2>&1 &
+    elif command -v cao &> /dev/null; then
+        nohup cao server > /dev/null 2>&1 &
+    fi
+
+    MAX_RETRIES=5
+    RETRY_COUNT=0
+    until curl -sf "$CAO_SERVER_URL/sessions" > /dev/null 2>&1 || [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
+        sleep 1
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+    done
+
+    if curl -sf "$CAO_SERVER_URL/sessions" > /dev/null 2>&1; then
+        echo "✅ cao-server 已自動啟動完成！"
+    else
+        echo "⚠️ 警告: 自動啟動 cao-server 逾時或未成功 ($CAO_SERVER_URL)。"
+        echo "💡 提示: 請手動檢查 'cao-server' 服務狀態。"
+    fi
 fi
 
 echo "============================================================"

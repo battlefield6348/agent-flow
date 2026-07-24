@@ -242,3 +242,49 @@ func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
 		}
 	})
 }
+
+func TestOrchestratorService_DuplicateMRTodos(t *testing.T) {
+	todo1 := Todo{ID: 101, Project: "group/proj", MergeRequest: MergeRequest{IID: 278, State: "opened", WebURL: "http://gitlab.com/mr/278", Author: "author1"}}
+	todo2 := Todo{ID: 102, Project: "group/proj", MergeRequest: MergeRequest{IID: 278, State: "opened", WebURL: "http://gitlab.com/mr/278", Author: "author1"}}
+
+	t.Run("duplicate MR todo deduplication on CI check failure", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo1, todo2},
+			Pipelines: []Pipeline{
+				{ID: 1, Status: "running"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected 0 dispatched tasks due to running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("duplicate MR todo deduplication and mark done after dispatch", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo1, todo2},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected 1 dispatched task for duplicate MRs, got %d", len(dispatcher.DispatchedTasks))
+		}
+		if len(gl.MarkedTodoIDs) != 2 {
+			t.Fatalf("Expected 2 todo IDs marked as done, got %d (%v)", len(gl.MarkedTodoIDs), gl.MarkedTodoIDs)
+		}
+	})
+}
