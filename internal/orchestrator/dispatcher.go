@@ -258,6 +258,36 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 	return fmt.Errorf("POST input HTTP %d: %s", postResp.StatusCode, string(respBody))
 }
 
+type caoSessionListItem struct {
+	Session   string `json:"session"`
+	Conductor struct {
+		ID           string `json:"id"`
+		AgentProfile string `json:"agent_profile"`
+		Provider     string `json:"provider"`
+		Status       string `json:"status"`
+	} `json:"conductor"`
+}
+
+type caoSessionDetail struct {
+	Session struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	} `json:"session"`
+	Terminals []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"terminals"`
+}
+
+func isStatusBusy(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	if s == "" || s == "completed" || s == "idle" || s == "ready" || s == "stopped" {
+		return false
+	}
+	return true
+}
+
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
 	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
 	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
@@ -273,6 +303,9 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 	outputStr := string(out)
 	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
 		return fmt.Errorf("未檢測到運作中的 CAO Session (%s)，請先在終端機執行 cao launch 啟動 Session", targetSession)
+	}
+	if strings.Contains(outputStr, "is currently processing") {
+		return fmt.Errorf("CAO Terminal 目前正在處理任務中 (%s): %s", targetSession, strings.TrimSpace(outputStr))
 	}
 
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
@@ -291,6 +324,39 @@ func (c *CaoDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error
 }
 
 func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool, error) {
+	sessionNames := []string{
+		fmt.Sprintf("cao-gitlab-%s", agentID),
+		fmt.Sprintf("gitlab-%s", agentID),
+		agentID,
+	}
+
+	for _, sessionName := range sessionNames {
+		url := fmt.Sprintf("%s/sessions/%s", c.ServerURL, sessionName)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var detail caoSessionDetail
+			if err := json.NewDecoder(resp.Body).Decode(&detail); err == nil {
+				_ = resp.Body.Close()
+				for _, term := range detail.Terminals {
+					if isStatusBusy(term.Status) {
+						return true, nil
+					}
+				}
+				return false, nil
+			}
+		}
+		_ = resp.Body.Close()
+	}
+
 	url := fmt.Sprintf("%s/sessions", c.ServerURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -312,14 +378,43 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 		return false, err
 	}
 
-	return strings.Contains(string(respBody), "running"), nil
+	content := strings.ToLower(string(respBody))
+	return strings.Contains(content, "running") || strings.Contains(content, "processing") || strings.Contains(content, "busy"), nil
 }
 
 func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool, error) {
-	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list")
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list", "--json")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("cao session list 失敗: %w, 輸出: %s", err, string(out))
+	if err == nil {
+		var sessions []caoSessionListItem
+		if jsonErr := json.Unmarshal(out, &sessions); jsonErr == nil {
+			for _, item := range sessions {
+				if agentID == "" || strings.Contains(item.Session, agentID) {
+					if isStatusBusy(item.Conductor.Status) {
+						return true, nil
+					}
+				}
+			}
+			return false, nil
+		}
 	}
-	return strings.Contains(string(out), "running"), nil
+
+	fallbackCmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list")
+	fallbackOut, fallbackErr := fallbackCmd.CombinedOutput()
+	if fallbackErr != nil {
+		return false, fmt.Errorf("cao session list 失敗: %w, 輸出: %s", fallbackErr, string(fallbackOut))
+	}
+
+	lines := strings.Split(string(fallbackOut), "\n")
+	for _, line := range lines {
+		if agentID != "" && !strings.Contains(line, agentID) {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, "running") || strings.Contains(lowerLine, "processing") || strings.Contains(lowerLine, "busy") {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
