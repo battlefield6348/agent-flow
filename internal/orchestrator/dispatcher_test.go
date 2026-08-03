@@ -82,17 +82,17 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 
 	t.Run("IsBusy via HTTP Processing Status Success", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
 			if r.URL.Path == "/sessions/cao-gitlab-reviewer" {
-				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`{"session":{"id":"cao-gitlab-reviewer"},"terminals":[{"id":"4fdca9de","status":"processing"}]}`))
 				return
 			}
-			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`[]`))
 		}))
 		defer server.Close()
 
 		dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
+		dispatcher.CheckTmuxPrompt = nil
 		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
 		if err != nil {
 			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
@@ -102,10 +102,34 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 		}
 	})
 
+	t.Run("IsBusy via HTTP Processing But Tmux Prompt Ready", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			if r.URL.Path == "/sessions/cao-gitlab-reviewer" {
+				_, _ = w.Write([]byte(`{"session":{"id":"cao-gitlab-reviewer"},"terminals":[{"id":"4fdca9de","status":"processing"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		}))
+		defer server.Close()
+
+		dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
+		dispatcher.CheckTmuxPrompt = func(ctx context.Context, sessionName string) (bool, bool) {
+			return true, true
+		}
+		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
+		if err != nil {
+			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
+		}
+		if busy {
+			t.Errorf("期望 tmux prompt ready 時 busy 為 false，但得到 true")
+		}
+	})
+
 	t.Run("IsBusy via HTTP Fallback Processing", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
 			if r.URL.Path == "/sessions" {
-				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`[{"id": "cao-gitlab-reviewer", "status": "processing"}]`))
 				return
 			}
@@ -114,6 +138,7 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 		defer server.Close()
 
 		dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
+		dispatcher.CheckTmuxPrompt = nil
 		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
 		if err != nil {
 			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
@@ -122,4 +147,18 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 			t.Errorf("期望 fallback processing 狀態時 busy 為 true，但得到 false")
 		}
 	})
+}
+
+func TestCaoDispatcher_EnsureSessions(t *testing.T) {
+	dispatcher := NewCaoDispatcher("true", "cao-main", "")
+	agents := []CollaboratorConfig{
+		{
+			ID:          "reviewer",
+			GitLabToken: "glpat-reviewer-test-token",
+		},
+	}
+	err := dispatcher.EnsureSessions(context.Background(), agents)
+	if err != nil {
+		t.Fatalf("EnsureSessions 執行失敗: %v", err)
+	}
 }

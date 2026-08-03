@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -33,10 +34,11 @@ type TaskDispatcher interface {
 
 // CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發與動態 Session 管理
 type CaoDispatcher struct {
-	CaoBinPath  string
-	SessionName string
-	ServerURL   string
-	HTTPClient  *http.Client
+	CaoBinPath      string
+	SessionName     string
+	ServerURL       string
+	HTTPClient      *http.Client
+	CheckTmuxPrompt func(ctx context.Context, sessionName string) (ready bool, exists bool)
 }
 
 func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher {
@@ -50,10 +52,11 @@ func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher 
 		serverURL = "http://localhost:9889"
 	}
 	return &CaoDispatcher{
-		CaoBinPath:  caoBinPath,
-		SessionName: sessionName,
-		ServerURL:   strings.TrimSuffix(serverURL, "/"),
-		HTTPClient:  &http.Client{Timeout: 10 * time.Second},
+		CaoBinPath:      caoBinPath,
+		SessionName:     sessionName,
+		ServerURL:       strings.TrimSuffix(serverURL, "/"),
+		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
+		CheckTmuxPrompt: isTmuxPromptReady,
 	}
 }
 
@@ -129,8 +132,24 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 		if provider != "" {
 			args = append(args, "--provider", provider)
 		}
+		if agent.GitLabToken != "" {
+			args = append(args,
+				"--env", fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+				"--env", fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+				"--env", fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+			)
+		}
 
 		cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
+		if agent.GitLabToken != "" {
+			env := os.Environ()
+			env = append(env,
+				fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+				fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+				fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+			)
+			cmd.Env = env
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
@@ -288,6 +307,32 @@ func isStatusBusy(status string) bool {
 	return true
 }
 
+func isTmuxPromptReady(ctx context.Context, sessionName string) (bool, bool) {
+	if sessionName == "" {
+		return false, false
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-p", "-t", sessionName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, false
+	}
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "? for shortcuts") || strings.HasPrefix(line, "────────") || strings.HasPrefix(line, "--------") {
+			continue
+		}
+		if line == ">" || strings.HasPrefix(line, "> ") || strings.HasPrefix(line, "❯") {
+			return true, true
+		}
+		return false, true
+	}
+	return false, true
+}
+
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
 	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
 	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
@@ -348,6 +393,14 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 				_ = resp.Body.Close()
 				for _, term := range detail.Terminals {
 					if isStatusBusy(term.Status) {
+						if c.CheckTmuxPrompt != nil {
+							if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+								if ready {
+									return false, nil
+								}
+								return true, nil
+							}
+						}
 						return true, nil
 					}
 				}
@@ -379,7 +432,20 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 	}
 
 	content := strings.ToLower(string(respBody))
-	return strings.Contains(content, "running") || strings.Contains(content, "processing") || strings.Contains(content, "busy"), nil
+	if strings.Contains(content, "running") || strings.Contains(content, "processing") || strings.Contains(content, "busy") {
+		for _, sessionName := range sessionNames {
+			if c.CheckTmuxPrompt != nil {
+				if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+					if ready {
+						return false, nil
+					}
+					return true, nil
+				}
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool, error) {
@@ -391,6 +457,14 @@ func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool,
 			for _, item := range sessions {
 				if agentID == "" || strings.Contains(item.Session, agentID) {
 					if isStatusBusy(item.Conductor.Status) {
+						if c.CheckTmuxPrompt != nil {
+							if ready, exists := c.CheckTmuxPrompt(ctx, item.Session); exists {
+								if ready {
+									return false, nil
+								}
+								return true, nil
+							}
+						}
 						return true, nil
 					}
 				}
@@ -412,6 +486,18 @@ func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool,
 		}
 		lowerLine := strings.ToLower(line)
 		if strings.Contains(lowerLine, "running") || strings.Contains(lowerLine, "processing") || strings.Contains(lowerLine, "busy") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				sessionName := fields[0]
+				if c.CheckTmuxPrompt != nil {
+					if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+						if ready {
+							return false, nil
+						}
+						return true, nil
+					}
+				}
+			}
 			return true, nil
 		}
 	}
