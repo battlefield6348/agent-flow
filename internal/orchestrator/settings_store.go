@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -10,21 +11,47 @@ import (
 
 type WorkflowSettings struct {
 	GitLabURL        string               `yaml:"gitlab_url" json:"gitlab_url"`
+	GitLabToken      string               `yaml:"gitlab_token" json:"gitlab_token"`
 	IntervalSeconds  int                  `yaml:"interval_seconds" json:"interval_seconds"`
 	CheckCISuccess   bool                 `yaml:"check_ci_success" json:"check_ci_success"`
 	AllowedProjects  []string             `yaml:"allowed_projects" json:"allowed_projects"`
 	AllowedMRAuthors []string             `yaml:"allowed_mr_authors" json:"allowed_mr_authors"`
+	CaoBinPath       string               `yaml:"cao_bin_path" json:"cao_bin_path"`
+	CaoSessionName   string               `yaml:"cao_session_name" json:"cao_session_name"`
+	CaoServerURL     string               `yaml:"cao_server_url" json:"cao_server_url"`
 	Agents           []CollaboratorConfig `yaml:"agents" json:"-"`
 }
 
 func LoadWorkflowSettings(path string) (WorkflowSettings, error) {
-	data, err := os.ReadFile(path)
+	candidatePaths := []string{
+		path,
+		"configs/config.yaml",
+		"configs/settings.yaml",
+		"data/settings.yaml",
+	}
+
+	var targetPath string
+	for _, p := range candidatePaths {
+		if p != "" {
+			if _, err := os.Stat(p); err == nil {
+				targetPath = p
+				break
+			}
+		}
+	}
+
+	if targetPath == "" {
+		targetPath = "configs/config.yaml"
+	}
+
+	data, err := os.ReadFile(targetPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return WorkflowSettings{}, nil
 	}
 	if err != nil {
 		return WorkflowSettings{}, err
 	}
+	slog.Info("已成功載入設定檔", "path", targetPath)
 	var settings WorkflowSettings
 	if err := yaml.Unmarshal(data, &settings); err != nil {
 		return WorkflowSettings{}, err

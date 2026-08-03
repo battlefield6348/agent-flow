@@ -1,0 +1,506 @@
+package orchestrator
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// DispatchTaskInput 封裝發送給 Agent 的任務資訊
+type DispatchTaskInput struct {
+	AgentID        string
+	Workspace      string
+	Instruction    string
+	MRIID          int
+	MRWebURL       string
+	CaoSessionName string
+}
+
+// TaskDispatcher 定義與 Agent 派發工具互動的介面
+type TaskDispatcher interface {
+	DispatchTask(ctx context.Context, input DispatchTaskInput) error
+	IsBusy(ctx context.Context, agentID string) (bool, error)
+	EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error
+	ShutdownSessions(ctx context.Context) error
+}
+
+// CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發與動態 Session 管理
+type CaoDispatcher struct {
+	CaoBinPath      string
+	SessionName     string
+	ServerURL       string
+	HTTPClient      *http.Client
+	CheckTmuxPrompt func(ctx context.Context, sessionName string) (ready bool, exists bool)
+}
+
+func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher {
+	if caoBinPath == "" {
+		caoBinPath = "cao"
+	}
+	if sessionName == "" {
+		sessionName = "cao-main"
+	}
+	if serverURL == "" {
+		serverURL = "http://localhost:9889"
+	}
+	return &CaoDispatcher{
+		CaoBinPath:      caoBinPath,
+		SessionName:     sessionName,
+		ServerURL:       strings.TrimSuffix(serverURL, "/"),
+		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
+		CheckTmuxPrompt: isTmuxPromptReady,
+	}
+}
+
+// normalizeProvider 將常規/常見別名規範化為 cao 支援的 Provider 名稱
+func normalizeProvider(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch p {
+	case "agy", "antigravity", "antigravity cli", "antigravity_cli":
+		return "antigravity_cli"
+	case "kiro", "kiro cli", "kiro_cli":
+		return "kiro_cli"
+	case "claude", "claude code", "claude_code":
+		return "claude_code"
+	case "cursor", "cursor cli", "cursor_cli":
+		return "cursor_cli"
+	case "copilot", "copilot cli", "copilot_cli":
+		return "copilot_cli"
+	default:
+		return p
+	}
+}
+
+func (c *CaoDispatcher) deleteSessionRecord(ctx context.Context, sessionName string) {
+	if c.ServerURL == "" {
+		return
+	}
+	url := fmt.Sprintf("%s/sessions/%s", c.ServerURL, sessionName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+// EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
+func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
+	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
+	activeStr := string(activeOut)
+
+	for _, agent := range agents {
+		sessionName := agent.CaoSessionName
+		if sessionName == "" {
+			sessionName = fmt.Sprintf("gitlab-%s", agent.ID)
+		}
+
+		if strings.Contains(activeStr, sessionName) {
+			slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
+			continue
+		}
+
+		// 啟動前先清理可能殘留的孤兒 DB 紀錄，防止與新建 tmux 視窗產生衝突
+		c.deleteSessionRecord(ctx, sessionName)
+
+		profile := agent.CaoAgentProfile
+		if profile == "" {
+			if agent.ID == "reviewer" {
+				profile = "review_supervisor"
+			} else if agent.ID == "coder" {
+				profile = "code_supervisor"
+			} else {
+				profile = "developer"
+			}
+		}
+
+		provider := normalizeProvider(agent.CaoProvider)
+
+		slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", provider)
+
+		args := []string{"launch", "--agents", profile, "--session-name", sessionName, "--headless", "--auto-approve"}
+		if provider != "" {
+			args = append(args, "--provider", provider)
+		}
+		if agent.GitLabToken != "" {
+			args = append(args,
+				"--env", fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+				"--env", fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+				"--env", fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+			)
+		}
+
+		cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
+		if agent.GitLabToken != "" {
+			env := os.Environ()
+			env = append(env,
+				fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+				fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+				fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+			)
+			cmd.Env = env
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
+		} else {
+			slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
+			time.Sleep(2 * time.Second)
+		}
+
+		if active, err := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput(); err == nil {
+			activeStr = string(active)
+		}
+	}
+	return nil
+}
+
+// ShutdownSessions 執行 CAO/tmux 的深層優雅關閉與清理 (同步清理 DB 紀錄與 tmux 視窗)
+func (c *CaoDispatcher) ShutdownSessions(ctx context.Context) error {
+	slog.Info("正在深層優雅關閉 CAO/tmux Sessions 與 DB 紀錄...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(shutdownCtx, c.CaoBinPath, "shutdown")
+	_, _ = cmd.CombinedOutput()
+
+	cleanCmd := exec.CommandContext(shutdownCtx, "sh", "-c", "tmux list-sessions -F '#S' 2>/dev/null | grep -E '^(gitlab-|cao-)' | xargs -r -I {} tmux kill-session -t {}")
+	_ = cleanCmd.Run()
+
+	slog.Info("已成功深層優雅關閉所有 CAO/tmux Sessions")
+	return nil
+}
+
+func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInput) error {
+	if c.ServerURL != "" {
+		err := c.dispatchViaHTTP(ctx, input)
+		if err == nil {
+			slog.Info("成功透過 cao-server HTTP API 送達任務訊息", "session", c.getTargetSessionName(ctx, input.CaoSessionName))
+			return nil
+		}
+		slog.Debug("cao-server HTTP 派發未成功，轉由 CLI 模式發送", "reason", err)
+	}
+
+	return c.dispatchViaCLI(ctx, input)
+}
+
+func (c *CaoDispatcher) getTargetSessionName(ctx context.Context, requestedSession string) string {
+	if requestedSession != "" {
+		return requestedSession
+	}
+	activeSession := c.findActiveSessionName(ctx)
+	if activeSession != "" {
+		slog.Info("動態匹配到目前活躍中的 CAO Session", "active_session", activeSession)
+		return activeSession
+	}
+	return c.SessionName
+}
+
+func (c *CaoDispatcher) findActiveSessionName(ctx context.Context) string {
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && strings.HasPrefix(fields[0], "cao-") {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskInput) error {
+	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
+	terminalsURL := fmt.Sprintf("%s/sessions/%s/terminals", c.ServerURL, targetSession)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, terminalsURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET terminals HTTP %d", resp.StatusCode)
+	}
+
+	var terminals []struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&terminals); err != nil || len(terminals) == 0 {
+		return fmt.Errorf("找不到可用的 supervisor terminal id")
+	}
+
+	supervisorID := terminals[0].ID
+	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, supervisorID)
+	payload := map[string]string{
+		"message": input.Instruction,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, inputURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+
+	postResp, err := c.HTTPClient.Do(postReq)
+	if err != nil {
+		return err
+	}
+	defer postResp.Body.Close()
+
+	if postResp.StatusCode >= 200 && postResp.StatusCode < 300 {
+		return nil
+	}
+
+	respBody, _ := io.ReadAll(postResp.Body)
+	return fmt.Errorf("POST input HTTP %d: %s", postResp.StatusCode, string(respBody))
+}
+
+type caoSessionListItem struct {
+	Session   string `json:"session"`
+	Conductor struct {
+		ID           string `json:"id"`
+		AgentProfile string `json:"agent_profile"`
+		Provider     string `json:"provider"`
+		Status       string `json:"status"`
+	} `json:"conductor"`
+}
+
+type caoSessionDetail struct {
+	Session struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	} `json:"session"`
+	Terminals []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"terminals"`
+}
+
+func isStatusBusy(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	if s == "" || s == "completed" || s == "idle" || s == "ready" || s == "stopped" {
+		return false
+	}
+	return true
+}
+
+func isTmuxPromptReady(ctx context.Context, sessionName string) (bool, bool) {
+	if sessionName == "" {
+		return false, false
+	}
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-p", "-t", sessionName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, false
+	}
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "? for shortcuts") || strings.HasPrefix(line, "────────") || strings.HasPrefix(line, "--------") {
+			continue
+		}
+		if line == ">" || strings.HasPrefix(line, "> ") || strings.HasPrefix(line, "❯") {
+			return true, true
+		}
+		return false, true
+	}
+	return false, true
+}
+
+func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
+	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
+	if input.Workspace != "" {
+		cmd.Dir = input.Workspace
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		slog.Info("成功透過 CLI 將任務送達 CAO Session", "session", targetSession)
+		return nil
+	}
+
+	outputStr := string(out)
+	if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
+		return fmt.Errorf("未檢測到運作中的 CAO Session (%s)，請先在終端機執行 cao launch 啟動 Session", targetSession)
+	}
+	if strings.Contains(outputStr, "is currently processing") {
+		return fmt.Errorf("CAO Terminal 目前正在處理任務中 (%s): %s", targetSession, strings.TrimSpace(outputStr))
+	}
+
+	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
+}
+
+func (c *CaoDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error) {
+	if c.ServerURL != "" {
+		busy, err := c.isBusyViaHTTP(ctx, agentID)
+		if err == nil {
+			return busy, nil
+		}
+		slog.Warn("透過 cao-server 檢查狀態失敗，降級使用 CLI 檢查", "error", err)
+	}
+
+	return c.isBusyViaCLI(ctx, agentID)
+}
+
+func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool, error) {
+	sessionNames := []string{
+		fmt.Sprintf("cao-gitlab-%s", agentID),
+		fmt.Sprintf("gitlab-%s", agentID),
+		agentID,
+	}
+
+	for _, sessionName := range sessionNames {
+		url := fmt.Sprintf("%s/sessions/%s", c.ServerURL, sessionName)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var detail caoSessionDetail
+			if err := json.NewDecoder(resp.Body).Decode(&detail); err == nil {
+				_ = resp.Body.Close()
+				for _, term := range detail.Terminals {
+					if isStatusBusy(term.Status) {
+						if c.CheckTmuxPrompt != nil {
+							if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+								if ready {
+									return false, nil
+								}
+								return true, nil
+							}
+						}
+						return true, nil
+					}
+				}
+				return false, nil
+			}
+		}
+		_ = resp.Body.Close()
+	}
+
+	url := fmt.Sprintf("%s/sessions", c.ServerURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("HTTP status %d", resp.StatusCode)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+
+	content := strings.ToLower(string(respBody))
+	if strings.Contains(content, "running") || strings.Contains(content, "processing") || strings.Contains(content, "busy") {
+		for _, sessionName := range sessionNames {
+			if c.CheckTmuxPrompt != nil {
+				if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+					if ready {
+						return false, nil
+					}
+					return true, nil
+				}
+			}
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool, error) {
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list", "--json")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		var sessions []caoSessionListItem
+		if jsonErr := json.Unmarshal(out, &sessions); jsonErr == nil {
+			for _, item := range sessions {
+				if agentID == "" || strings.Contains(item.Session, agentID) {
+					if isStatusBusy(item.Conductor.Status) {
+						if c.CheckTmuxPrompt != nil {
+							if ready, exists := c.CheckTmuxPrompt(ctx, item.Session); exists {
+								if ready {
+									return false, nil
+								}
+								return true, nil
+							}
+						}
+						return true, nil
+					}
+				}
+			}
+			return false, nil
+		}
+	}
+
+	fallbackCmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list")
+	fallbackOut, fallbackErr := fallbackCmd.CombinedOutput()
+	if fallbackErr != nil {
+		return false, fmt.Errorf("cao session list 失敗: %w, 輸出: %s", fallbackErr, string(fallbackOut))
+	}
+
+	lines := strings.Split(string(fallbackOut), "\n")
+	for _, line := range lines {
+		if agentID != "" && !strings.Contains(line, agentID) {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, "running") || strings.Contains(lowerLine, "processing") || strings.Contains(lowerLine, "busy") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				sessionName := fields[0]
+				if c.CheckTmuxPrompt != nil {
+					if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
+						if ready {
+							return false, nil
+						}
+						return true, nil
+					}
+				}
+			}
+			return true, nil
+		}
+	}
+
+	return false, nil
+}

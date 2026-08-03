@@ -15,7 +15,7 @@ func TestSettingsStoreRoundTrip(t *testing.T) {
 		AllowedProjects:  []string{"group/project"},
 		AllowedMRAuthors: []string{"author"},
 		Agents: []CollaboratorConfig{{
-			ID: "coder", Cmd: "codex", GitLabToken: "gitlab-secret",
+			ID: "coder", GitLabToken: "gitlab-secret",
 		}},
 	}
 	if err := SaveWorkflowSettings(path, want); err != nil {

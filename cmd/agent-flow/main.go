@@ -2,83 +2,53 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"gemini-collaborator-go/internal/orchestrator"
 )
 
 func main() {
-	// 初始化結構化日誌 (預設輸出到 Stdout)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	const (
-		settingsPath = "data/settings.yaml"
-		logDir       = "logs"
-		listenAddr   = "0.0.0.0:8081"
-	)
+	const settingsPath = "configs/config.yaml"
 	settings, err := orchestrator.LoadWorkflowSettings(settingsPath)
 	if err != nil {
-		slog.Error("Failed to load workflow settings", "error", err)
+		slog.Error("載入設定檔失敗", "error", err)
 		os.Exit(1)
 	}
 	gitlabURL := settings.GitLabURL
 
 	gitlabRepo := orchestrator.NewHttpGitLabRepository(gitlabURL, "")
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
-	terminal := orchestrator.NewTmuxTerminal()
-	workerManager := orchestrator.NewWorkerManager(settings.Agents, logDir, terminal)
 
-	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, workerManager)
+	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName, settings.CaoServerURL)
+	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, caoDispatcher)
 	service.SetCheckCISuccess(settings.CheckCISuccess)
-	slog.Info("Starting local Workers in tmux...")
-	workerManager.StartAll()
+	slog.Info("成功初始化 Agent Flow (結合 CLI Agent Orchestrator)")
 
 	interval := time.Duration(settings.IntervalSeconds) * time.Second
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	scheduler := orchestrator.NewScheduler(service, interval, settings.AllowedProjects, settings.AllowedMRAuthors, settings.Agents, gitlabURL)
+	scheduler := orchestrator.NewScheduler(service, interval, settings.AllowedProjects, settings.AllowedMRAuthors, settings.Agents, gitlabURL, settings.GitLabToken)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 依據設定檔動態檢查與啟動指定的 CAO Sessions
+	if err := caoDispatcher.EnsureSessions(ctx, settings.Agents); err != nil {
+		slog.Warn("檢查/啟動 CAO Sessions 時發生非阻斷式錯誤", "error", err)
+	}
 
 	scheduler.Start(ctx)
-	slog.Info("Agent Flow web UI is active", "address", listenAddr)
-	if err := http.ListenAndServe(listenAddr, orchestrator.NewWebServer(settingsPath, workerManager, scheduler)); err != nil {
-		slog.Error("Web server stopped", "error", err)
-	}
-}
+	slog.Info("Agent Flow 背景輪詢服務已啟動...")
 
-func monitorAnswers(logDir string) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		// 檢查是否有任何 worker 的回答檔案
-		files, err := os.ReadDir(logDir)
-		if err != nil {
-			continue
-		}
-
-		for _, f := range files {
-			if strings.HasSuffix(f.Name(), "_answer.txt") {
-				path := filepath.Join(logDir, f.Name())
-				data, err := os.ReadFile(path)
-				if err == nil {
-					content := strings.TrimSpace(string(data))
-					if content != "" && !strings.Contains(content, "NO_TASKS") {
-						workerID := strings.TrimSuffix(f.Name(), "_answer.txt")
-						fmt.Printf("\n==================== %s ANSWER ====================\n%s\n=========================================================\n\n", strings.ToUpper(workerID), content)
-						_ = os.WriteFile(path, []byte(""), 0644)
-					}
-				}
-			}
-		}
-	}
+	<-ctx.Done()
+	slog.Info("收到關閉訊號，Agent Flow 服務正在停止...")
+	_ = caoDispatcher.ShutdownSessions(context.Background())
 }

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -28,20 +27,28 @@ type WorkspaceRepository interface {
 	FindLocalPath(ctx context.Context, projectPath string) (string, error)
 }
 
-// OrchestratorService 負責協調任務排程的業務邏輯 (Use Case)
+// OrchestratorService 負責協調任務排程的核心業務邏輯
 type OrchestratorService struct {
 	gitlabRepo     GitLabRepository
 	workspaceRepo  WorkspaceRepository
-	workerManager  *WorkerManager
+	dispatcher     TaskDispatcher
 	checkCISuccess bool
 	mu             sync.RWMutex
 }
 
-func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, wm *WorkerManager) *OrchestratorService {
+func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, dispatcher TaskDispatcher) *OrchestratorService {
 	return &OrchestratorService{
 		gitlabRepo:    gl,
 		workspaceRepo: ws,
-		workerManager: wm,
+		dispatcher:    dispatcher,
+	}
+}
+
+func NewOrchestratorServiceWithDispatcher(gl GitLabRepository, ws WorkspaceRepository, dispatcher TaskDispatcher) *OrchestratorService {
+	return &OrchestratorService{
+		gitlabRepo:    gl,
+		workspaceRepo: ws,
+		dispatcher:    dispatcher,
 	}
 }
 
@@ -58,7 +65,7 @@ func (s *OrchestratorService) CheckCISuccess() bool {
 }
 
 // ScanAndAssignForAgent 針對特定的 Agent 執行掃描與任務分派的核心業務邏輯
-func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string) error {
+func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string, caoSessionName string) error {
 	slog.Debug("Scanning GitLab Todos", "agent_id", agentID)
 	todos, err := repo.FetchPendingTodos(ctx)
 	if err != nil {
@@ -72,113 +79,134 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 	slog.Info("Pending Todos found", "agent_id", agentID, "count", len(todos))
 
+	type mrKey struct {
+		project string
+		mrIID   int
+	}
+	dispatchedMRs := make(map[mrKey]bool)
+	evaluatedMRs := make(map[mrKey]bool)
+
 	for _, todo := range todos {
 		mr := todo.MergeRequest
 		projectPath := todo.Project
+		key := mrKey{project: projectPath, mrIID: mr.IID}
 
-		// 僅處理開啟狀態的 Merge Request，避免對已合併或關閉的任務進行無謂的操作
 		if strings.ToLower(mr.State) != "opened" {
 			slog.Info("Cleaning up non-opened MR Todo", "todo_id", todo.ID, "mr_iid", mr.IID, "project", projectPath, "state", mr.State)
 			_ = repo.MarkTodoAsDone(ctx, todo.ID)
 			continue
 		}
 
-		// 根據專案白名單過濾，確保僅在授權的專案範圍內運作
+		if dispatchedMRs[key] {
+			slog.Info("MR already dispatched in current batch, marking duplicate todo as done", "todo_id", todo.ID, "mr_iid", mr.IID)
+			_ = repo.MarkTodoAsDone(ctx, todo.ID)
+			continue
+		}
+
+		if evaluatedMRs[key] {
+			continue
+		}
+		evaluatedMRs[key] = true
+
 		if !s.isAllowed(projectPath, allowedProjects) {
 			slog.Info("Skipping Todo: project not allowed", "todo_id", todo.ID, "project", projectPath)
 			continue
 		}
 
-		// 根據作者白名單過濾，用於限定特定開發者的 MR 評審任務
 		if !s.isAllowed(mr.Author, allowedAuthors) {
 			slog.Info("Skipping Todo: author not allowed", "todo_id", todo.ID, "mr_iid", mr.IID, "author", mr.Author)
 			continue
 		}
 
-		// 檢查 Worker 忙碌狀態以實現背壓控流，避免資源競爭或重複指派
-		if s.workerManager != nil && s.isWorkerBusy(agentID) {
-			slog.Info("Worker is busy, postponing MR", "worker_id", agentID, "mr_iid", mr.IID)
-			continue
-		}
-
-		var notes []Note
-		if agentID == coderAgentID {
-			notes, err = repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
-			if err != nil {
-				slog.Error("Failed to fetch notes for coder Todo", "mr_iid", mr.IID, "error", err)
-				continue
-			}
-			if !hasRequestedChanges(notes) {
-				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
-					slog.Error("Failed to mark coder Todo as done", "todo_id", todo.ID, "error", err)
-				}
+		if s.dispatcher != nil {
+			busy, err := s.dispatcher.IsBusy(ctx, agentID)
+			if err == nil && busy {
+				slog.Info("Agent dispatcher is busy, postponing MR", "agent_id", agentID, "mr_iid", mr.IID)
 				continue
 			}
 		}
 
-		// 檢查 CI 狀態
+		var latestStatus string
 		if s.CheckCISuccess() {
 			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
 			if err != nil {
 				slog.Error("Failed to fetch pipelines for MR", "project", projectPath, "mr_iid", mr.IID, "error", err)
 				continue
 			}
-
 			if len(pipelines) > 0 {
-				latestStatus := pipelines[0].Status
-				if latestStatus != "success" {
-					slog.Info("CI is not successful yet, skipping assignment", "mr_iid", mr.IID, "status", latestStatus)
-					continue
-				}
-			} else {
-				slog.Info("No associated CI/pipelines found, proceeding", "mr_iid", mr.IID)
+				latestStatus = pipelines[0].Status
 			}
 		}
 
-		// 定位本地工作區路徑，以便 Worker 能在正確的環境中執行靜態分析或測試
+		if isCIPendingOrRunning(latestStatus) {
+			slog.Info("CI pipeline is running/pending, skipping assignment", "mr_iid", mr.IID, "status", latestStatus)
+			continue
+		}
+
+		ciFailed := isCIFailed(latestStatus)
+
+		if agentID == reviewerAgentID && ciFailed {
+			slog.Info("CI pipeline failed, skipping reviewer assignment", "mr_iid", mr.IID, "status", latestStatus)
+			continue
+		}
+
+		isCiRepairTask := false
+		if agentID == coderAgentID {
+			if ciFailed {
+				isCiRepairTask = true
+			} else {
+				notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+				if err != nil {
+					slog.Error("Failed to fetch notes for coder Todo", "mr_iid", mr.IID, "error", err)
+					continue
+				}
+				if !hasRequestedChanges(notes) {
+					if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+						slog.Error("Failed to mark coder Todo as done", "todo_id", todo.ID, "error", err)
+					}
+					continue
+				}
+			}
+		}
+
 		localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
 		if err != nil {
 			slog.Error("Error locating local workspace", "project", projectPath, "error", err)
 			continue
 		}
 
-		// 分派任務給底層 Worker 執行；若為 Mock 模式則僅記錄 Log
-		if s.workerManager != nil {
-			username, err := repo.GetUsername(ctx)
-			if err != nil {
-				slog.Error("Failed to get agent username", "agent_id", agentID, "error", err)
-				continue
+		if s.dispatcher != nil {
+			var instruction string
+			if agentID == reviewerAgentID {
+				instruction = fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
+			} else if isCiRepairTask {
+				instruction = fmt.Sprintf("CI 建置/測試失敗 (Pipeline 狀態: %s)，請檢查 CI 錯誤日誌並於同一個 Merge Request 分支完成修正，完成後發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", latestStatus, mr.IID, mr.WebURL)
+			} else {
+				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
 			}
-			if notes == nil {
-				notes, err = repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
-				if err != nil {
-					slog.Error("Failed to fetch notes before assignment", "mr_iid", mr.IID, "error", err)
-					continue
-				}
-			}
-			lastNoteID := highestNoteIDByAuthor(notes, username)
-			s.assignToWorker(agentID, mr, localPath, func(string) {
-				updatedNotes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
-				if err != nil {
-					slog.Error("Failed to fetch notes after worker success", "mr_iid", mr.IID, "error", err)
-					return
-				}
-				latestNoteID := lastNoteID
-				latestNoteBody := ""
-				for _, note := range updatedNotes {
-					if note.Author == username && note.ID > latestNoteID {
-						latestNoteID = note.ID
-						latestNoteBody = note.Body
-					}
-				}
-				if latestNoteID > lastNoteID && isValidCompletionNote(agentID, latestNoteBody) {
-					if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
-						slog.Error("Failed to mark completed Todo as done", "todo_id", todo.ID, "error", err)
-					}
-				}
+
+			err := s.dispatcher.DispatchTask(ctx, DispatchTaskInput{
+				AgentID:        agentID,
+				Workspace:      localPath,
+				Instruction:    instruction,
+				MRIID:          mr.IID,
+				MRWebURL:       mr.WebURL,
+				CaoSessionName: caoSessionName,
 			})
+			if err != nil {
+				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "error", err)
+			} else {
+				slog.Info("Successfully dispatched task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID)
+				dispatchedMRs[key] = true
+				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+					slog.Error("Failed to mark Todo as done after dispatch", "todo_id", todo.ID, "error", err)
+				} else {
+					slog.Info("Marked Todo as done in GitLab", "todo_id", todo.ID, "mr_iid", mr.IID)
+				}
+			}
 		} else {
 			slog.Info("Mock mode: task assignment", "agent_id", agentID, "mr_iid", mr.IID, "workspace", localPath)
+			dispatchedMRs[key] = true
 		}
 	}
 
@@ -194,24 +222,11 @@ func hasRequestedChanges(notes []Note) bool {
 			latestConclusion = note.Body
 		}
 	}
+	// 若尚未發起過審查結論 (如一般標註 @coder 留言)，預設允許 Coder 進行處理
+	if latestConclusion == "" {
+		return true
+	}
 	return strings.Contains(latestConclusion, "需修改後再審")
-}
-
-func highestNoteIDByAuthor(notes []Note, username string) int {
-	lastID := 0
-	for _, note := range notes {
-		if note.Author == username && note.ID > lastID {
-			lastID = note.ID
-		}
-	}
-	return lastID
-}
-
-func isValidCompletionNote(agentID, body string) bool {
-	if agentID == coderAgentID {
-		return strings.HasPrefix(body, "## 修正回覆")
-	}
-	return agentID == reviewerAgentID && (strings.HasPrefix(body, "## 審查結論") || strings.HasPrefix(body, "### 結論"))
 }
 
 func (s *OrchestratorService) isAllowed(target string, allowedList []string) bool {
@@ -227,41 +242,18 @@ func (s *OrchestratorService) isAllowed(target string, allowedList []string) boo
 	return false
 }
 
-func (s *OrchestratorService) isWorkerBusy(agentID string) bool {
-	for _, w := range s.workerManager.Workers {
-		if w.Config.ID == agentID && w.IsBusy() {
-			return true
-		}
-	}
-	return false
+func isCIFailed(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	return s == "failed" || s == "canceled"
 }
 
-func (s *OrchestratorService) assignToWorker(agentID string, mr MergeRequest, localPath string, onSuccess func(string)) {
-	for _, w := range s.workerManager.Workers {
-		if w.Config.ID == agentID {
-			if w.Config.Workspace != localPath {
-				slog.Info("Switching worker workspace", "worker_id", agentID, "from", w.Config.Workspace, "to", localPath)
-				w.Stop()
-				w.Config.Workspace = localPath
-				w.Start()
-				time.Sleep(15 * time.Second)
-			}
-			var actionName string
-			if agentID == reviewerAgentID {
-				actionName = "評審"
-			} else {
-				actionName = "處理"
-			}
-			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
-			if agentID == coderAgentID {
-				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
-			}
-			if w.Config.PromptSuffix != "" {
-				instruction += w.Config.PromptSuffix
-			}
-			instruction += "\n"
-			w.SendTask(WorkerTask{Text: instruction, OnSuccess: onSuccess})
-			slog.Info("Assigned task to worker", "worker_id", agentID, "mr_iid", mr.IID)
-		}
+func isCIPendingOrRunning(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	switch s {
+	case "running", "pending", "created", "manual", "preparing", "scheduled", "waiting_for_resource":
+		return true
+	default:
+		return false
 	}
 }
+

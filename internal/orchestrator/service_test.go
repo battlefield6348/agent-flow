@@ -2,7 +2,7 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
+	"strings"
 	"testing"
 )
 
@@ -47,42 +47,6 @@ func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, proje
 	return m.Notes, err
 }
 
-func TestOrchestratorService_ReviewerCompletionLifecycle(t *testing.T) {
-	todo := Todo{ID: 2, Project: "group/project", MergeRequest: MergeRequest{IID: 102, State: "opened", WebURL: "http://gitlab.com/mr/102", Author: "author1"}}
-	gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "review-bot", NotesByCall: [][]Note{
-		{{ID: 4, Author: "review-bot", Body: "舊留言"}},
-		{{ID: 4, Author: "review-bot", Body: "舊留言"}, {ID: 5, Author: "review-bot", Body: "### 結論\n請修正"}},
-	}}
-	worker := &Worker{Config: CollaboratorConfig{ID: "reviewer", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
-	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-
-	if err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if len(gl.MarkedTodoIDs) != 0 {
-		t.Fatalf("Todo completed before reviewer success: %v", gl.MarkedTodoIDs)
-	}
-	(<-worker.inputCh).OnSuccess("完成")
-	if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
-		t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
-	}
-}
-
-func TestOrchestratorService_CompletionNoteFetchErrorLeavesTodoOpen(t *testing.T) {
-	todo := Todo{ID: 3, Project: "group/project", MergeRequest: MergeRequest{IID: 103, State: "opened", WebURL: "http://gitlab.com/mr/103", Author: "author1"}}
-	gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{{{ID: 4, Body: "## 審查結論\n需修改後再審"}}}, NoteErrors: []error{nil, errors.New("notes unavailable")}}
-	worker := &Worker{Config: CollaboratorConfig{ID: "coder", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
-	service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-
-	if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	(<-worker.inputCh).OnSuccess("完成")
-	if len(gl.MarkedTodoIDs) != 0 {
-		t.Fatalf("Todo completed after note fetch error: %v", gl.MarkedTodoIDs)
-	}
-}
-
 type MockWorkspaceRepository struct {
 	Path string
 }
@@ -107,12 +71,16 @@ func TestOrchestratorService_ScanAndAssign(t *testing.T) {
 		},
 	}
 	ws := &MockWorkspaceRepository{Path: "/local/path"}
+	dispatcher := &MockTaskDispatcher{}
 
-	service := NewOrchestratorService(gl, ws, nil)
+	service := NewOrchestratorService(gl, ws, dispatcher)
 
-	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
 	if err != nil {
 		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+	}
+	if len(dispatcher.DispatchedTasks) != 1 {
+		t.Fatalf("Expected 1 dispatched task, got %d", len(dispatcher.DispatchedTasks))
 	}
 }
 
@@ -136,12 +104,16 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 			},
 		}
 		ws := &MockWorkspaceRepository{Path: "/local/path"}
-		service := NewOrchestratorService(gl, ws, nil)
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(false)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected 1 dispatched task, got %d", len(dispatcher.DispatchedTasks))
 		}
 	})
 
@@ -153,80 +125,39 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 			},
 		}
 		ws := &MockWorkspaceRepository{Path: "/local/path"}
-		service := NewOrchestratorService(gl, ws, nil)
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected 1 dispatched task, got %d", len(dispatcher.DispatchedTasks))
+		}
 	})
 
-	t.Run("CI check is enabled and status is running", func(t *testing.T) {
+	t.Run("CI check is enabled and status is failed", func(t *testing.T) {
 		gl := &MockGitLabRepository{
 			Todos: []Todo{todo},
 			Pipelines: []Pipeline{
-				{ID: 1, Status: "running"},
+				{ID: 1, Status: "failed"},
 			},
 		}
 		ws := &MockWorkspaceRepository{Path: "/local/path"}
-		service := NewOrchestratorService(gl, ws, nil)
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
-	})
-
-	t.Run("CI check is enabled and no pipelines exist", func(t *testing.T) {
-		gl := &MockGitLabRepository{
-			Todos:     []Todo{todo},
-			Pipelines: []Pipeline{},
-		}
-		ws := &MockWorkspaceRepository{Path: "/local/path"}
-		service := NewOrchestratorService(gl, ws, nil)
-		service.SetCheckCISuccess(true)
-
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"})
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected 0 dispatched tasks due to failed CI, got %d", len(dispatcher.DispatchedTasks))
 		}
 	})
-}
-
-func TestOrchestratorService_AssignToWorkerWithPromptSuffix(t *testing.T) {
-	w := &Worker{
-		Config: CollaboratorConfig{
-			ID:           "coder",
-			Cmd:          "codex",
-			PromptSuffix: "，請立刻處理",
-			Workspace:    "/local/path",
-		},
-		inputCh: make(chan WorkerTask, 10),
-	}
-
-	wm := &WorkerManager{
-		Workers: []*Worker{w},
-	}
-
-	service := NewOrchestratorService(nil, nil, wm)
-	mr := MergeRequest{
-		IID:    101,
-		WebURL: "http://gitlab.com/mr/101",
-	}
-
-	service.assignToWorker("coder", mr, "/local/path", nil)
-
-	select {
-	case sent := <-w.inputCh:
-		expected := "請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request 101。網址為：http://gitlab.com/mr/101，請立刻處理\n"
-		if sent.Text != expected {
-			t.Errorf("預期發送為 '%s'，但得到 '%s'", expected, sent.Text)
-		}
-	default:
-		t.Fatalf("預期有發送指令到 inputCh，但沒收到")
-	}
 }
 
 func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
@@ -236,117 +167,218 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		MergeRequest: MergeRequest{IID: 101, State: "opened", WebURL: "http://gitlab.com/mr/101", Author: "author1"},
 	}
 
-	newWorker := func() *Worker {
-		return &Worker{Config: CollaboratorConfig{ID: "coder", Workspace: "/local/path"}, inputCh: make(chan WorkerTask, 1)}
-	}
-
 	t.Run("coder skips non-fix todo", func(t *testing.T) {
 		gl := &MockGitLabRepository{Todos: []Todo{todo}, Notes: []Note{{ID: 1, Body: "## 審查結論\n可以合併"}}}
-		worker := newWorker()
-		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
 			t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
 		}
-		select {
-		case <-worker.inputCh:
-			t.Fatal("coder received a non-fix todo")
-		default:
-		}
-	})
-
-	t.Run("coder skips a requested fix superseded by approval", func(t *testing.T) {
-		gl := &MockGitLabRepository{Todos: []Todo{todo}, Notes: []Note{
-			{ID: 1, Body: "## 審查結論\n需修改後再審"},
-			{ID: 2, Body: "### 結論\n可以合併"},
-		}}
-		worker := newWorker()
-		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-		if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
-			t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
-		}
-		select {
-		case <-worker.inputCh:
-			t.Fatal("coder received a Todo superseded by approval")
-		default:
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("coder received non-fix todo, count=%d", len(dispatcher.DispatchedTasks))
 		}
 	})
 
 	t.Run("coder dispatches requested-fix todo", func(t *testing.T) {
 		gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", Notes: []Note{{ID: 1, Body: "## 審查結論\n需修改後再審"}}}
-		worker := newWorker()
-		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
 			t.Fatal(err)
 		}
-		if len(gl.MarkedTodoIDs) != 0 {
-			t.Fatalf("Todo completed before worker success: %v", gl.MarkedTodoIDs)
-		}
-		select {
-		case task := <-worker.inputCh:
-			if task.OnSuccess == nil {
-				t.Fatal("coder task has no completion callback")
-			}
-		default:
-			t.Fatal("coder did not receive requested-fix todo")
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("coder expected 1 task, got %d", len(dispatcher.DispatchedTasks))
 		}
 	})
 
-	t.Run("completion requires new role-valid bot note", func(t *testing.T) {
-		t.Run("leaves Todo open when a valid note is followed by an invalid note", func(t *testing.T) {
-			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 修正回覆\n已修正"}, {ID: 6, Author: "bot", Body: "## 其他留言"}},
-			}}
-			worker := newWorker()
-			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
-				t.Fatal(err)
-			}
-			(<-worker.inputCh).OnSuccess("完成")
-			if len(gl.MarkedTodoIDs) != 0 {
-				t.Fatalf("Todo completed despite newer invalid note: %v", gl.MarkedTodoIDs)
-			}
-		})
+	t.Run("coder dispatches mentioned todo without conclusion header", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", Notes: []Note{{ID: 1, Body: "@coder 請協助重構此模組"}}}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		t.Run("leaves Todo open for an invalid new note", func(t *testing.T) {
-			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 其他留言"}},
-			}}
-			worker := newWorker()
-			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
-				t.Fatal(err)
-			}
-			(<-worker.inputCh).OnSuccess("完成")
-			if len(gl.MarkedTodoIDs) != 0 {
-				t.Fatalf("Todo completed for invalid note: %v", gl.MarkedTodoIDs)
-			}
-		})
-
-		t.Run("marks Todo for a new role-valid note", func(t *testing.T) {
-			gl := &MockGitLabRepository{Todos: []Todo{todo}, Username: "bot", NotesByCall: [][]Note{
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}},
-				{{ID: 4, Body: "## 審查結論\n需修改後再審"}, {ID: 5, Author: "bot", Body: "## 修正回覆\n已修正"}},
-			}}
-			worker := newWorker()
-			service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, &WorkerManager{Workers: []*Worker{worker}})
-			if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil); err != nil {
-				t.Fatal(err)
-			}
-			(<-worker.inputCh).OnSuccess("完成")
-			if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
-				t.Fatalf("Todo completion = %v, want [%d]", gl.MarkedTodoIDs, todo.ID)
-			}
-		})
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("coder expected 1 task for direct mention, got %d", len(dispatcher.DispatchedTasks))
+		}
 	})
 }
+
+func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
+	todo := Todo{ID: 10, Project: "group/proj", MergeRequest: MergeRequest{IID: 200, State: "opened", WebURL: "http://gitlab.com/mr/200", Author: "author1"}}
+	gl := &MockGitLabRepository{Todos: []Todo{todo}}
+	ws := &MockWorkspaceRepository{Path: "/workspace/proj"}
+
+	t.Run("busy dispatcher postpones task", func(t *testing.T) {
+		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": true}}
+		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("busy 時不應指派任務，但指派了 %d 個", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("idle dispatcher assigns task", func(t *testing.T) {
+		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": false}}
+		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("期望指派 1 個任務，但得到了 %d 個", len(dispatcher.DispatchedTasks))
+		}
+		task := dispatcher.DispatchedTasks[0]
+		if task.AgentID != "reviewer" || task.MRIID != 200 || task.Workspace != "/workspace/proj" {
+			t.Errorf("派發任務內容不符合期望: %+v", task)
+		}
+	})
+}
+
+func TestOrchestratorService_DuplicateMRTodos(t *testing.T) {
+	todo1 := Todo{ID: 101, Project: "group/proj", MergeRequest: MergeRequest{IID: 278, State: "opened", WebURL: "http://gitlab.com/mr/278", Author: "author1"}}
+	todo2 := Todo{ID: 102, Project: "group/proj", MergeRequest: MergeRequest{IID: 278, State: "opened", WebURL: "http://gitlab.com/mr/278", Author: "author1"}}
+
+	t.Run("duplicate MR todo deduplication on CI check failure", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo1, todo2},
+			Pipelines: []Pipeline{
+				{ID: 1, Status: "running"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected 0 dispatched tasks due to running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("duplicate MR todo deduplication and mark done after dispatch", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo1, todo2},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected 1 dispatched task for duplicate MRs, got %d", len(dispatcher.DispatchedTasks))
+		}
+		if len(gl.MarkedTodoIDs) != 2 {
+			t.Fatalf("Expected 2 todo IDs marked as done, got %d (%v)", len(gl.MarkedTodoIDs), gl.MarkedTodoIDs)
+		}
+	})
+}
+
+func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
+	todo := Todo{
+		ID:      1,
+		Project: "group/project",
+		MergeRequest: MergeRequest{
+			IID:    101,
+			State:  "opened",
+			WebURL: "http://gitlab.com/mr/101",
+			Author: "author1",
+		},
+	}
+
+	t.Run("CI is failed, coder receives repair task", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "failed"},
+			},
+			Notes: []Note{}, // 沒有「需修改後再審」之類的評論
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected coder to be assigned 1 repair task on CI failure, got %d", len(dispatcher.DispatchedTasks))
+		}
+		task := dispatcher.DispatchedTasks[0]
+		if task.AgentID != "coder" {
+			t.Errorf("Expected agentID coder, got %s", task.AgentID)
+		}
+		if !strings.Contains(task.Instruction, "CI") || !strings.Contains(task.Instruction, "修正") {
+			t.Errorf("Instruction should mention CI repair, got: %s", task.Instruction)
+		}
+	})
+
+	t.Run("CI is failed, reviewer skips assignment", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "failed"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected reviewer to skip task on CI failure, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("CI is running, both coder and reviewer skip assignment", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "running"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected coder to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+
+		err = service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected reviewer to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+}
+
