@@ -126,37 +126,46 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			}
 		}
 
-		var notes []Note
-		if agentID == coderAgentID {
-			var err error
-			notes, err = repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
-			if err != nil {
-				slog.Error("Failed to fetch notes for coder Todo", "mr_iid", mr.IID, "error", err)
-				continue
-			}
-			if !hasRequestedChanges(notes) {
-				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
-					slog.Error("Failed to mark coder Todo as done", "todo_id", todo.ID, "error", err)
-				}
-				continue
-			}
-		}
-
+		var latestStatus string
 		if s.CheckCISuccess() {
 			pipelines, err := repo.FetchMergeRequestPipelines(ctx, projectPath, mr.IID)
 			if err != nil {
 				slog.Error("Failed to fetch pipelines for MR", "project", projectPath, "mr_iid", mr.IID, "error", err)
 				continue
 			}
-
 			if len(pipelines) > 0 {
-				latestStatus := pipelines[0].Status
-				if latestStatus != "success" {
-					slog.Info("CI is not successful yet, skipping assignment", "mr_iid", mr.IID, "status", latestStatus)
+				latestStatus = pipelines[0].Status
+			}
+		}
+
+		if isCIPendingOrRunning(latestStatus) {
+			slog.Info("CI pipeline is running/pending, skipping assignment", "mr_iid", mr.IID, "status", latestStatus)
+			continue
+		}
+
+		ciFailed := isCIFailed(latestStatus)
+
+		if agentID == reviewerAgentID && ciFailed {
+			slog.Info("CI pipeline failed, skipping reviewer assignment", "mr_iid", mr.IID, "status", latestStatus)
+			continue
+		}
+
+		isCiRepairTask := false
+		if agentID == coderAgentID {
+			if ciFailed {
+				isCiRepairTask = true
+			} else {
+				notes, err := repo.FetchMergeRequestNotes(ctx, projectPath, mr.IID)
+				if err != nil {
+					slog.Error("Failed to fetch notes for coder Todo", "mr_iid", mr.IID, "error", err)
 					continue
 				}
-			} else {
-				slog.Info("No associated CI/pipelines found, proceeding", "mr_iid", mr.IID)
+				if !hasRequestedChanges(notes) {
+					if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
+						slog.Error("Failed to mark coder Todo as done", "todo_id", todo.ID, "error", err)
+					}
+					continue
+				}
 			}
 		}
 
@@ -167,14 +176,12 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 		}
 
 		if s.dispatcher != nil {
-			var actionName string
+			var instruction string
 			if agentID == reviewerAgentID {
-				actionName = "評審"
+				instruction = fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
+			} else if isCiRepairTask {
+				instruction = fmt.Sprintf("CI 建置/測試失敗 (Pipeline 狀態: %s)，請檢查 CI 錯誤日誌並於同一個 Merge Request 分支完成修正，完成後發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", latestStatus, mr.IID, mr.WebURL)
 			} else {
-				actionName = "處理"
-			}
-			instruction := fmt.Sprintf("請開始%s Merge Request %d。網址為：%s", actionName, mr.IID, mr.WebURL)
-			if agentID == coderAgentID {
 				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
 			}
 
@@ -234,3 +241,19 @@ func (s *OrchestratorService) isAllowed(target string, allowedList []string) boo
 	}
 	return false
 }
+
+func isCIFailed(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	return s == "failed" || s == "canceled"
+}
+
+func isCIPendingOrRunning(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	switch s {
+	case "running", "pending", "created", "manual", "preparing", "scheduled", "waiting_for_resource":
+		return true
+	default:
+		return false
+	}
+}
+

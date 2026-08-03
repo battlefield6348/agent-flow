@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -288,3 +289,96 @@ func TestOrchestratorService_DuplicateMRTodos(t *testing.T) {
 		}
 	})
 }
+
+func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
+	todo := Todo{
+		ID:      1,
+		Project: "group/project",
+		MergeRequest: MergeRequest{
+			IID:    101,
+			State:  "opened",
+			WebURL: "http://gitlab.com/mr/101",
+			Author: "author1",
+		},
+	}
+
+	t.Run("CI is failed, coder receives repair task", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "failed"},
+			},
+			Notes: []Note{}, // 沒有「需修改後再審」之類的評論
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("Expected coder to be assigned 1 repair task on CI failure, got %d", len(dispatcher.DispatchedTasks))
+		}
+		task := dispatcher.DispatchedTasks[0]
+		if task.AgentID != "coder" {
+			t.Errorf("Expected agentID coder, got %s", task.AgentID)
+		}
+		if !strings.Contains(task.Instruction, "CI") || !strings.Contains(task.Instruction, "修正") {
+			t.Errorf("Instruction should mention CI repair, got: %s", task.Instruction)
+		}
+	})
+
+	t.Run("CI is failed, reviewer skips assignment", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "failed"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected reviewer to skip task on CI failure, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("CI is running, both coder and reviewer skip assignment", func(t *testing.T) {
+		gl := &MockGitLabRepository{
+			Todos: []Todo{todo},
+			Pipelines: []Pipeline{
+				{ID: 10, Status: "running"},
+			},
+		}
+		ws := &MockWorkspaceRepository{Path: "/local/path"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+		service.SetCheckCISuccess(true)
+
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected coder to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+
+		err = service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		if err != nil {
+			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("Expected reviewer to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+}
+
