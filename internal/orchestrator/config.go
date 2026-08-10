@@ -1,5 +1,10 @@
 package orchestrator
 
+const (
+	ModeMultiSession = "multi_session"
+	ModeSupervisor   = "supervisor"
+)
+
 // CollaboratorConfig 定義個案 Agent 輪詢與專屬 CAO Session 配置
 type CollaboratorConfig struct {
 	ID              string `yaml:"id" json:"id"`

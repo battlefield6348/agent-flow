@@ -27,9 +27,10 @@ func main() {
 	workspaceRepo := orchestrator.NewOsWorkspaceRepository()
 
 	caoDispatcher := orchestrator.NewCaoDispatcher(settings.CaoBinPath, settings.CaoSessionName, settings.CaoServerURL)
+	caoDispatcher.SetMode(settings.Mode)
 	service := orchestrator.NewOrchestratorService(gitlabRepo, workspaceRepo, caoDispatcher)
 	service.SetCheckCISuccess(settings.CheckCISuccess)
-	slog.Info("成功初始化 Agent Flow (結合 CLI Agent Orchestrator)")
+	slog.Info("成功初始化 Agent Flow (結合 CLI Agent Orchestrator)", "mode", settings.Mode)
 
 	interval := time.Duration(settings.IntervalSeconds) * time.Second
 	if interval <= 0 {

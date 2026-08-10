@@ -381,4 +381,3 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 		}
 	})
 }
-

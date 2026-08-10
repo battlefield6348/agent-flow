@@ -34,6 +34,7 @@ type TaskDispatcher interface {
 
 // CaoDispatcher 實現與 cli-agent-orchestrator (cao) 的整合介面，專注於任務訊息轉發與動態 Session 管理
 type CaoDispatcher struct {
+	Mode            string
 	CaoBinPath      string
 	SessionName     string
 	ServerURL       string
@@ -52,11 +53,18 @@ func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher 
 		serverURL = "http://localhost:9889"
 	}
 	return &CaoDispatcher{
+		Mode:            ModeMultiSession,
 		CaoBinPath:      caoBinPath,
 		SessionName:     sessionName,
 		ServerURL:       strings.TrimSuffix(serverURL, "/"),
 		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
 		CheckTmuxPrompt: isTmuxPromptReady,
+	}
+}
+
+func (c *CaoDispatcher) SetMode(mode string) {
+	if mode != "" {
+		c.Mode = mode
 	}
 }
 

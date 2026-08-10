@@ -1,4 +1,6 @@
 # Agent Flow 設定檔範例 (完全配置驅動：靈活自訂 Session、Profile 與 AI Provider)
+# 啟動模式：multi_session (預設獨立 Session 模式) 或 supervisor (單一 CAO Supervisor 動態派發模式)
+mode: "multi_session"
 gitlab_url: "https://gitlab.example.com"
 interval_seconds: 60
 check_ci_success: true

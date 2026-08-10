@@ -10,6 +10,7 @@ import (
 )
 
 type WorkflowSettings struct {
+	Mode             string               `yaml:"mode" json:"mode"`
 	GitLabURL        string               `yaml:"gitlab_url" json:"gitlab_url"`
 	GitLabToken      string               `yaml:"gitlab_token" json:"gitlab_token"`
 	IntervalSeconds  int                  `yaml:"interval_seconds" json:"interval_seconds"`
@@ -46,7 +47,7 @@ func LoadWorkflowSettings(path string) (WorkflowSettings, error) {
 
 	data, err := os.ReadFile(targetPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return WorkflowSettings{}, nil
+		return WorkflowSettings{Mode: ModeMultiSession}, nil
 	}
 	if err != nil {
 		return WorkflowSettings{}, err
@@ -55,6 +56,9 @@ func LoadWorkflowSettings(path string) (WorkflowSettings, error) {
 	var settings WorkflowSettings
 	if err := yaml.Unmarshal(data, &settings); err != nil {
 		return WorkflowSettings{}, err
+	}
+	if settings.Mode == "" {
+		settings.Mode = ModeMultiSession
 	}
 	return settings, nil
 }

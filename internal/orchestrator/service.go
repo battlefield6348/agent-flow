@@ -256,4 +256,3 @@ func isCIPendingOrRunning(status string) bool {
 		return false
 	}
 }
-
