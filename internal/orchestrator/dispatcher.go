@@ -377,10 +377,23 @@ func (c *CaoDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error
 }
 
 func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool, error) {
-	sessionNames := []string{
-		fmt.Sprintf("cao-gitlab-%s", agentID),
-		fmt.Sprintf("gitlab-%s", agentID),
-		agentID,
+	var sessionNames []string
+	if c.Mode == ModeSupervisor {
+		if c.SessionName != "" {
+			sessionNames = append(sessionNames, c.SessionName)
+		}
+		if active := c.findActiveSessionName(ctx); active != "" && active != c.SessionName {
+			sessionNames = append(sessionNames, active)
+		}
+	} else {
+		if c.SessionName != "" {
+			sessionNames = append(sessionNames, c.SessionName)
+		}
+		sessionNames = append(sessionNames,
+			fmt.Sprintf("cao-gitlab-%s", agentID),
+			fmt.Sprintf("gitlab-%s", agentID),
+			agentID,
+		)
 	}
 
 	for _, sessionName := range sessionNames {
@@ -457,13 +470,24 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 }
 
 func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool, error) {
+	targetSession := c.getTargetSessionName(ctx, "")
+
+	if c.CheckTmuxPrompt != nil {
+		if ready, exists := c.CheckTmuxPrompt(ctx, targetSession); exists {
+			if ready {
+				return false, nil
+			}
+			return true, nil
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "list", "--json")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		var sessions []caoSessionListItem
 		if jsonErr := json.Unmarshal(out, &sessions); jsonErr == nil {
 			for _, item := range sessions {
-				if agentID == "" || strings.Contains(item.Session, agentID) {
+				if targetSession != "" && (item.Session == targetSession || strings.Contains(item.Session, targetSession)) {
 					if isStatusBusy(item.Conductor.Status) {
 						if c.CheckTmuxPrompt != nil {
 							if ready, exists := c.CheckTmuxPrompt(ctx, item.Session); exists {
@@ -489,7 +513,7 @@ func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool,
 
 	lines := strings.Split(string(fallbackOut), "\n")
 	for _, line := range lines {
-		if agentID != "" && !strings.Contains(line, agentID) {
+		if targetSession != "" && !strings.Contains(line, targetSession) {
 			continue
 		}
 		lowerLine := strings.ToLower(line)
