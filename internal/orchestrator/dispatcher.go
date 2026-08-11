@@ -43,13 +43,22 @@ type CaoDispatcher struct {
 	CheckTmuxPrompt func(ctx context.Context, sessionName string) (ready bool, exists bool)
 }
 
+func formatSessionName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "cao-main"
+	}
+	if !strings.HasPrefix(name, "cao-") {
+		return "cao-" + name
+	}
+	return name
+}
+
 func NewCaoDispatcher(caoBinPath, sessionName, serverURL string) *CaoDispatcher {
 	if caoBinPath == "" {
 		caoBinPath = "cao"
 	}
-	if sessionName == "" {
-		sessionName = "cao-main"
-	}
+	sessionName = formatSessionName(sessionName)
 	if serverURL == "" {
 		serverURL = "http://localhost:9889"
 	}
@@ -113,6 +122,7 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 		if sessionName == "" {
 			sessionName = fmt.Sprintf("gitlab-%s", agent.ID)
 		}
+		sessionName = formatSessionName(sessionName)
 
 		if strings.Contains(activeStr, sessionName) {
 			slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
@@ -205,14 +215,14 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 
 func (c *CaoDispatcher) getTargetSessionName(ctx context.Context, requestedSession string) string {
 	if requestedSession != "" {
-		return requestedSession
+		return formatSessionName(requestedSession)
 	}
 	activeSession := c.findActiveSessionName(ctx)
 	if activeSession != "" {
 		slog.Info("動態匹配到目前活躍中的 CAO Session", "active_session", activeSession)
-		return activeSession
+		return formatSessionName(activeSession)
 	}
-	return c.SessionName
+	return formatSessionName(c.SessionName)
 }
 
 func (c *CaoDispatcher) findActiveSessionName(ctx context.Context) string {
