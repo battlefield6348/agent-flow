@@ -125,7 +125,7 @@ func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorCo
 	}
 
 	// 啟動時立即執行一次掃描，無需等待第一個 ticker 到期
-	s.executeScan(ctx, col, repo)
+	s.executeScan(ctx, col, repo, token)
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -133,7 +133,7 @@ func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorCo
 	for {
 		select {
 		case <-ticker.C:
-			s.executeScan(ctx, col, repo)
+			s.executeScan(ctx, col, repo, token)
 		case <-ctx.Done():
 			slog.Info("停止 Agent 輪詢迴圈", "agent_id", col.ID)
 			return
@@ -141,9 +141,9 @@ func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorCo
 	}
 }
 
-func (s *Scheduler) executeScan(ctx context.Context, col CollaboratorConfig, repo GitLabRepository) {
+func (s *Scheduler) executeScan(ctx context.Context, col CollaboratorConfig, repo GitLabRepository, token string) {
 	slog.Info("正在輪詢掃描 GitLab Todos...", "agent_id", col.ID)
-	err := s.service.ScanAndAssignForAgent(ctx, col.ID, repo, s.allowedProjects, s.allowedMRAuthors, col.CaoSessionName)
+	err := s.service.ScanAndAssignForAgent(ctx, col.ID, repo, s.allowedProjects, s.allowedMRAuthors, col.CaoSessionName, token)
 	if err != nil {
 		slog.Error("掃描 GitLab Todos 發生錯誤", "agent_id", col.ID, "error", err)
 	}

@@ -75,7 +75,7 @@ func TestOrchestratorService_ScanAndAssign(t *testing.T) {
 
 	service := NewOrchestratorService(gl, ws, dispatcher)
 
-	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
+	err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "", "")
 	if err != nil {
 		t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(false)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "", "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -129,7 +129,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "", "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -150,7 +150,7 @@ func TestOrchestratorService_ScanAndAssign_CIChecks(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, []string{"group/project"}, []string{"author1"}, "", "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -172,7 +172,7 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{}
 		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(gl.MarkedTodoIDs) != 1 || gl.MarkedTodoIDs[0] != todo.ID {
@@ -188,7 +188,7 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{}
 		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(dispatcher.DispatchedTasks) != 1 {
@@ -201,7 +201,7 @@ func TestOrchestratorService_CoderTodoLifecycle(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{}
 		service := NewOrchestratorService(gl, &MockWorkspaceRepository{Path: "/local/path"}, dispatcher)
 
-		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, ""); err != nil {
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(dispatcher.DispatchedTasks) != 1 {
@@ -218,7 +218,7 @@ func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
 	t.Run("busy dispatcher postpones task", func(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": true}}
 		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
 	t.Run("idle dispatcher assigns task", func(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{BusyMap: map[string]bool{"reviewer": false}}
 		service := NewOrchestratorServiceWithDispatcher(gl, ws, dispatcher)
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -260,7 +260,7 @@ func TestOrchestratorService_DuplicateMRTodos(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -277,7 +277,7 @@ func TestOrchestratorService_DuplicateMRTodos(t *testing.T) {
 		dispatcher := &MockTaskDispatcher{}
 		service := NewOrchestratorService(gl, ws, dispatcher)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("Expected no error, got %v", err)
 		}
@@ -315,7 +315,7 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 		}
@@ -343,7 +343,7 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 		}
@@ -364,7 +364,7 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 		service := NewOrchestratorService(gl, ws, dispatcher)
 		service.SetCheckCISuccess(true)
 
-		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "")
+		err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 			t.Fatalf("Expected coder to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
 		}
 
-		err = service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "")
+		err = service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", "")
 		if err != nil {
 			t.Fatalf("ScanAndAssignForAgent failed: %v", err)
 		}

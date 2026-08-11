@@ -22,6 +22,7 @@ type DispatchTaskInput struct {
 	MRIID          int
 	MRWebURL       string
 	CaoSessionName string
+	GitLabToken    string
 }
 
 // TaskDispatcher 定義與 Agent 派發工具互動的介面
@@ -257,8 +258,14 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 
 	supervisorID := terminals[0].ID
 	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, supervisorID)
+
+	finalInstruction := input.Instruction
+	if input.GitLabToken != "" {
+		finalInstruction = fmt.Sprintf("export GITLAB_TOKEN=%q GL_TOKEN=%q GLAB_TOKEN=%q; %s", input.GitLabToken, input.GitLabToken, input.GitLabToken, input.Instruction)
+	}
+
 	payload := map[string]string{
-		"message": input.Instruction,
+		"message": finalInstruction,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -343,7 +350,11 @@ func isTmuxPromptReady(ctx context.Context, sessionName string) (bool, bool) {
 
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
 	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
-	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, input.Instruction)
+	finalInstruction := input.Instruction
+	if input.GitLabToken != "" {
+		finalInstruction = fmt.Sprintf("export GITLAB_TOKEN=%q GL_TOKEN=%q GLAB_TOKEN=%q; %s", input.GitLabToken, input.GitLabToken, input.GitLabToken, input.Instruction)
+	}
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, finalInstruction)
 	if input.Workspace != "" {
 		cmd.Dir = input.Workspace
 	}
