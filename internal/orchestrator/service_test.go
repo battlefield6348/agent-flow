@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -48,11 +49,14 @@ func (m *MockGitLabRepository) FetchMergeRequestNotes(ctx context.Context, proje
 }
 
 type MockWorkspaceRepository struct {
-	Path string
+	Path  string
+	Err   error
+	Calls int
 }
 
 func (m *MockWorkspaceRepository) FindLocalPath(ctx context.Context, projectPath string) (string, error) {
-	return m.Path, nil
+	m.Calls++
+	return m.Path, m.Err
 }
 
 func TestOrchestratorService_ScanAndAssign(t *testing.T) {
@@ -238,7 +242,7 @@ func TestOrchestratorService_WithTaskDispatcher(t *testing.T) {
 			t.Fatalf("期望指派 1 個任務，但得到了 %d 個", len(dispatcher.DispatchedTasks))
 		}
 		task := dispatcher.DispatchedTasks[0]
-		if task.AgentID != "reviewer" || task.MRIID != 200 || task.Workspace != "/workspace/proj" {
+		if task.AgentID != "reviewer" || task.MRIID != 200 || task.Workspace != "" {
 			t.Errorf("派發任務內容不符合期望: %+v", task)
 		}
 	})
@@ -378,6 +382,62 @@ func TestOrchestratorService_CIFailureDirectToCoder(t *testing.T) {
 		}
 		if len(dispatcher.DispatchedTasks) != 0 {
 			t.Fatalf("Expected reviewer to skip task on running CI, got %d", len(dispatcher.DispatchedTasks))
+		}
+	})
+}
+
+func TestOrchestratorService_LocalWorkspaceByAgent(t *testing.T) {
+	todo := Todo{ID: 1, Project: "group/project", MergeRequest: MergeRequest{IID: 23, State: "opened", WebURL: "http://gitlab.com/mr/23", Author: "author1"}}
+
+	t.Run("reviewer 僅透過 GitLab 審查，不需本機 Repo 也能派發", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}}
+		ws := &MockWorkspaceRepository{Err: errors.New("local workspace not found")}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "reviewer", gl, nil, nil, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if ws.Calls != 0 {
+			t.Errorf("reviewer 不應查找本機 Repo，但查找了 %d 次", ws.Calls)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("期望 reviewer 派發 1 個任務，但得到 %d 個", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("coder 找不到本機 Repo 時不派發", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}}
+		ws := &MockWorkspaceRepository{Err: errors.New("local workspace not found")}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 0 {
+			t.Fatalf("coder 找不到本機 Repo 時不應派發，但派發了 %d 個", len(dispatcher.DispatchedTasks))
+		}
+	})
+
+	t.Run("coder 的派發指令包含本機 Repo 路徑", func(t *testing.T) {
+		gl := &MockGitLabRepository{Todos: []Todo{todo}}
+		ws := &MockWorkspaceRepository{Path: "/home/agent/projects/project"}
+		dispatcher := &MockTaskDispatcher{}
+		service := NewOrchestratorService(gl, ws, dispatcher)
+
+		if err := service.ScanAndAssignForAgent(context.Background(), "coder", gl, nil, nil, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		if len(dispatcher.DispatchedTasks) != 1 {
+			t.Fatalf("期望 coder 派發 1 個任務，但得到 %d 個", len(dispatcher.DispatchedTasks))
+		}
+		task := dispatcher.DispatchedTasks[0]
+		if task.Workspace != "/home/agent/projects/project" {
+			t.Errorf("Workspace = %q，期望為本機 Repo 路徑", task.Workspace)
+		}
+		if !strings.Contains(task.Instruction, "/home/agent/projects/project") {
+			t.Errorf("coder 指令應包含本機 Repo 路徑，但得到: %s", task.Instruction)
 		}
 	})
 }

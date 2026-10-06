@@ -169,10 +169,14 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			}
 		}
 
-		localPath, err := s.workspaceRepo.FindLocalPath(ctx, projectPath)
-		if err != nil {
-			slog.Error("Error locating local workspace", "project", projectPath, "error", err)
-			continue
+		// Reviewer 僅透過 GitLab API 審查 MR，只有需要修改程式的 Agent 才需要本機 Repo
+		var localPath string
+		if agentID != reviewerAgentID {
+			localPath, err = s.workspaceRepo.FindLocalPath(ctx, projectPath)
+			if err != nil {
+				slog.Error("Error locating local workspace", "project", projectPath, "error", err)
+				continue
+			}
 		}
 
 		if s.dispatcher != nil {
@@ -183,6 +187,9 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				instruction = fmt.Sprintf("CI 建置/測試失敗 (Pipeline 狀態: %s)，請檢查 CI 錯誤日誌並於同一個 Merge Request 分支完成修正，完成後發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", latestStatus, mr.IID, mr.WebURL)
 			} else {
 				instruction = fmt.Sprintf("請閱讀最新的審查結論，於同一個 Merge Request 分支完成修正，並發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
+			}
+			if localPath != "" {
+				instruction += fmt.Sprintf("。本機專案目錄：%s，請先切換至此目錄再進行修改。", localPath)
 			}
 
 			err := s.dispatcher.DispatchTask(ctx, DispatchTaskInput{
