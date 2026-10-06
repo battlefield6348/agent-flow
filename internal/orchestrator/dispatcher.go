@@ -548,7 +548,6 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 						if c.CheckTmuxPrompt != nil {
 							if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
 								if ready {
-									c.deleteSessionRecord(ctx, sessionName)
 									return false, nil
 								}
 								return true, nil

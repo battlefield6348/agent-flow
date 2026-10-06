@@ -104,7 +104,11 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 	})
 
 	t.Run("IsBusy via HTTP Processing But Tmux Prompt Ready", func(t *testing.T) {
+		deleted := false
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodDelete {
+				deleted = true
+			}
 			w.WriteHeader(http.StatusOK)
 			if r.URL.Path == "/sessions/cao-gitlab-reviewer" {
 				_, _ = w.Write([]byte(`{"session":{"id":"cao-gitlab-reviewer"},"terminals":[{"id":"4fdca9de","status":"processing"}]}`))
@@ -124,6 +128,9 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 		}
 		if busy {
 			t.Errorf("期望 tmux prompt ready 時 busy 為 false，但得到 true")
+		}
+		if deleted {
+			t.Errorf("期望判定閒置時不刪除仍在運作的 Session 紀錄，但送出了 DELETE 請求")
 		}
 	})
 
