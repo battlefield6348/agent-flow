@@ -119,9 +119,7 @@ func (c *CaoDispatcher) deleteSessionRecord(ctx context.Context, sessionName str
 
 // EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
 func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
-	c.mu.Lock()
-	c.agents = agents
-	c.mu.Unlock()
+	c.mergeAgents(agents)
 
 	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
 	activeStr := string(activeOut)
@@ -132,6 +130,26 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 		}
 	}
 	return nil
+}
+
+// mergeAgents 依 ID 合併代理人設定，避免單一代理人輪詢時覆蓋掉其他代理人的設定
+func (c *CaoDispatcher) mergeAgents(agents []CollaboratorConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, agent := range agents {
+		replaced := false
+		for i := range c.agents {
+			if c.agents[i].ID == agent.ID {
+				c.agents[i] = agent
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			c.agents = append(c.agents, agent)
+		}
+	}
 }
 
 func (c *CaoDispatcher) ensureSingleSession(ctx context.Context, agent CollaboratorConfig, activeStr string) error {

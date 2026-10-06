@@ -206,3 +206,24 @@ func TestCaoDispatcher_AutoRelaunchOnMissingSession(t *testing.T) {
 	}
 }
 
+func TestCaoDispatcher_EnsureSessionsMergesAgents(t *testing.T) {
+	// 驗證逐一代理人呼叫 EnsureSessions 時，不會覆蓋掉先前登記的其他代理人設定
+	dispatcher := NewCaoDispatcher("true", "cao-main", "")
+	dispatcher.LauncherFunc = func(ctx context.Context, agent CollaboratorConfig) error { return nil }
+
+	ctx := context.Background()
+	_ = dispatcher.EnsureSessions(ctx, []CollaboratorConfig{{ID: "reviewer", CaoSessionName: "gitlab-reviewer", CaoAgentProfile: "review_supervisor"}})
+	_ = dispatcher.EnsureSessions(ctx, []CollaboratorConfig{{ID: "coder", CaoSessionName: "gitlab-coder"}})
+	_ = dispatcher.EnsureSessions(ctx, []CollaboratorConfig{{ID: "reviewer", CaoSessionName: "gitlab-reviewer", CaoAgentProfile: "custom_profile"}})
+
+	if len(dispatcher.agents) != 2 {
+		t.Fatalf("期望保留 2 個代理人設定，但實際為 %d 個", len(dispatcher.agents))
+	}
+	reviewer, found := dispatcher.findAgentConfig("reviewer", "")
+	if !found || reviewer.CaoAgentProfile != "custom_profile" {
+		t.Errorf("期望 reviewer 設定被更新為 custom_profile，但得到 %+v (found=%v)", reviewer, found)
+	}
+	if _, found := dispatcher.findAgentConfig("coder", ""); !found {
+		t.Errorf("期望 coder 設定仍存在，但找不到")
+	}
+}
