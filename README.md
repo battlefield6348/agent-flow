@@ -160,6 +160,12 @@ make stop
 
 系統會自動停止輪詢，並同步深層清理背景所有 CAO/tmux Sessions 與資料庫殘留紀錄。
 
+### Session 自動恢復
+
+每次輪詢前會確認各 Agent 的 CAO Session 是否運作中；若派發時發現 Session 已不存在，會自動重新啟動並重送任務，無需手動 `cao launch`。
+
+> ⚠️ `gitlab_token` 會在 Session 啟動時注入環境變數。修改 `config.yaml` 中的 Token 後，請執行 `make stop` 再 `make start` 使其生效。
+
 ---
 
 ## 🛠️ 開發與常用指令
