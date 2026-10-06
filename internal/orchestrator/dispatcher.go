@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,10 @@ type CaoDispatcher struct {
 	ServerURL       string
 	HTTPClient      *http.Client
 	CheckTmuxPrompt func(ctx context.Context, sessionName string) (ready bool, exists bool)
+	LauncherFunc    func(ctx context.Context, agent CollaboratorConfig) error
+	CLISendFunc     func(ctx context.Context, session, instruction, workspace string) (string, error)
+	agents          []CollaboratorConfig
+	mu              sync.RWMutex
 }
 
 func formatSessionName(name string) string {
@@ -114,73 +119,83 @@ func (c *CaoDispatcher) deleteSessionRecord(ctx context.Context, sessionName str
 
 // EnsureSessions 依據 config 宣告動態檢查並自動啟動對應的 CAO Sessions
 func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error {
+	c.mu.Lock()
+	c.agents = agents
+	c.mu.Unlock()
+
 	activeOut, _ := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput()
 	activeStr := string(activeOut)
 
 	for _, agent := range agents {
-		sessionName := agent.CaoSessionName
-		if sessionName == "" {
-			sessionName = fmt.Sprintf("gitlab-%s", agent.ID)
-		}
-		sessionName = formatSessionName(sessionName)
-
-		if strings.Contains(activeStr, sessionName) {
-			slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
-			continue
-		}
-
-		// 啟動前先清理可能殘留的孤兒 DB 紀錄，防止與新建 tmux 視窗產生衝突
-		c.deleteSessionRecord(ctx, sessionName)
-
-		profile := agent.CaoAgentProfile
-		if profile == "" {
-			if agent.ID == "reviewer" {
-				profile = "review_supervisor"
-			} else if agent.ID == "coder" {
-				profile = "code_supervisor"
-			} else {
-				profile = "developer"
-			}
-		}
-
-		provider := normalizeProvider(agent.CaoProvider)
-
-		slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", provider)
-
-		args := []string{"launch", "--agents", profile, "--session-name", sessionName, "--headless", "--auto-approve"}
-		if provider != "" {
-			args = append(args, "--provider", provider)
-		}
-		if agent.GitLabToken != "" {
-			args = append(args,
-				"--env", fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
-				"--env", fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
-				"--env", fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
-			)
-		}
-
-		cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
-		if agent.GitLabToken != "" {
-			env := os.Environ()
-			env = append(env,
-				fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
-				fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
-				fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
-			)
-			cmd.Env = env
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
-		} else {
-			slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
-			time.Sleep(2 * time.Second)
-		}
-
-		if active, err := exec.CommandContext(ctx, c.CaoBinPath, "session", "list").CombinedOutput(); err == nil {
-			activeStr = string(active)
+		if err := c.ensureSingleSession(ctx, agent, activeStr); err != nil {
+			slog.Warn("動態啟動 CAO Session 發生錯誤", "agent_id", agent.ID, "error", err)
 		}
 	}
+	return nil
+}
+
+func (c *CaoDispatcher) ensureSingleSession(ctx context.Context, agent CollaboratorConfig, activeStr string) error {
+	if c.LauncherFunc != nil {
+		return c.LauncherFunc(ctx, agent)
+	}
+
+	sessionName := agent.CaoSessionName
+	if sessionName == "" {
+		sessionName = fmt.Sprintf("gitlab-%s", agent.ID)
+	}
+	sessionName = formatSessionName(sessionName)
+
+	if activeStr != "" && strings.Contains(activeStr, sessionName) {
+		slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
+		return nil
+	}
+
+	c.deleteSessionRecord(ctx, sessionName)
+
+	profile := agent.CaoAgentProfile
+	if profile == "" {
+		if agent.ID == "reviewer" {
+			profile = "review_supervisor"
+		} else if agent.ID == "coder" {
+			profile = "code_supervisor"
+		} else {
+			profile = "developer"
+		}
+	}
+
+	provider := normalizeProvider(agent.CaoProvider)
+
+	slog.Info("依據設定檔動態建立與啟動 CAO Session...", "session", sessionName, "profile", profile, "provider", provider)
+
+	args := []string{"launch", "--agents", profile, "--session-name", sessionName, "--headless", "--auto-approve"}
+	if provider != "" {
+		args = append(args, "--provider", provider)
+	}
+	if agent.GitLabToken != "" {
+		args = append(args,
+			"--env", fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+			"--env", fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+			"--env", fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+		)
+	}
+
+	cmd := exec.CommandContext(ctx, c.CaoBinPath, args...)
+	if agent.GitLabToken != "" {
+		env := os.Environ()
+		env = append(env,
+			fmt.Sprintf("GITLAB_TOKEN=%s", agent.GitLabToken),
+			fmt.Sprintf("GL_TOKEN=%s", agent.GitLabToken),
+			fmt.Sprintf("GLAB_TOKEN=%s", agent.GitLabToken),
+		)
+		cmd.Env = env
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("動態啟動 CAO Session 失敗 (可手動啟動)", "session", sessionName, "error", err, "output", string(out))
+		return err
+	}
+	slog.Info("成功依據設定檔自動建立 CAO Session", "session", sessionName)
+	time.Sleep(2 * time.Second)
 	return nil
 }
 
@@ -200,7 +215,70 @@ func (c *CaoDispatcher) ShutdownSessions(ctx context.Context) error {
 	return nil
 }
 
+func (c *CaoDispatcher) findAgentConfig(agentID, sessionName string) (CollaboratorConfig, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, a := range c.agents {
+		if agentID != "" && a.ID == agentID {
+			return a, true
+		}
+		formattedName := formatSessionName(a.CaoSessionName)
+		if sessionName != "" && (a.CaoSessionName == sessionName || formattedName == sessionName) {
+			return a, true
+		}
+	}
+	return CollaboratorConfig{}, false
+}
+
+func isSessionMissingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "未檢測到運作中的 cao session") ||
+		strings.Contains(msg, "no terminals found") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "session 不存在")
+}
+
 func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInput) error {
+	err := c.dispatchRaw(ctx, input)
+	if err == nil {
+		return nil
+	}
+
+	if isSessionMissingErr(err) {
+		agentConfig, found := c.findAgentConfig(input.AgentID, input.CaoSessionName)
+		if !found {
+			agentConfig = CollaboratorConfig{
+				ID:             input.AgentID,
+				CaoSessionName: input.CaoSessionName,
+				GitLabToken:    input.GitLabToken,
+			}
+		}
+
+		slog.Warn("檢測到 CAO Session 不存在，嘗試自動重啟中...", "agent_id", input.AgentID, "session", input.CaoSessionName)
+		if relaunchErr := c.ensureSingleSession(ctx, agentConfig, ""); relaunchErr != nil {
+			slog.Error("自動重啟 CAO Session 失敗", "agent_id", input.AgentID, "error", relaunchErr)
+			return err
+		}
+
+		time.Sleep(1 * time.Second)
+		slog.Info("Session 重啟完成，重新嘗試派發任務...", "agent_id", input.AgentID)
+
+		retryErr := c.dispatchRaw(ctx, input)
+		if retryErr == nil {
+			slog.Info("自動重啟 CAO Session 後成功重新派發任務", "agent_id", input.AgentID)
+			return nil
+		}
+		return retryErr
+	}
+
+	return err
+}
+
+func (c *CaoDispatcher) dispatchRaw(ctx context.Context, input DispatchTaskInput) error {
 	if c.ServerURL != "" {
 		err := c.dispatchViaHTTP(ctx, input)
 		if err == nil {
@@ -270,9 +348,6 @@ func (c *CaoDispatcher) dispatchViaHTTP(ctx context.Context, input DispatchTaskI
 	inputURL := fmt.Sprintf("%s/terminals/%s/input", c.ServerURL, supervisorID)
 
 	finalInstruction := input.Instruction
-	if input.GitLabToken != "" {
-		finalInstruction = fmt.Sprintf("export GITLAB_TOKEN=%q GL_TOKEN=%q GLAB_TOKEN=%q; %s", input.GitLabToken, input.GitLabToken, input.GitLabToken, input.Instruction)
-	}
 
 	payload := map[string]string{
 		"message": finalInstruction,
@@ -361,9 +436,26 @@ func isTmuxPromptReady(ctx context.Context, sessionName string) (bool, bool) {
 func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskInput) error {
 	targetSession := c.getTargetSessionName(ctx, input.CaoSessionName)
 	finalInstruction := input.Instruction
-	if input.GitLabToken != "" {
-		finalInstruction = fmt.Sprintf("export GITLAB_TOKEN=%q GL_TOKEN=%q GLAB_TOKEN=%q; %s", input.GitLabToken, input.GitLabToken, input.GitLabToken, input.Instruction)
+
+	if c.CLISendFunc != nil {
+		outStr, err := c.CLISendFunc(ctx, targetSession, finalInstruction, input.Workspace)
+		if err == nil {
+			slog.Info("成功透過 CLI 將任務送達 CAO Session", "session", targetSession)
+			return nil
+		}
+		if strings.Contains(err.Error(), "未檢測到運作中的 CAO Session") {
+			return err
+		}
+		outputStr := outStr
+		if outputStr == "" {
+			outputStr = err.Error()
+		}
+		if strings.Contains(outputStr, "No terminals found") || strings.Contains(outputStr, "not found") {
+			return fmt.Errorf("未檢測到運作中的 CAO Session (%s)，請先在終端機執行 cao launch 啟動 Session", targetSession)
+		}
+		return err
 	}
+
 	cmd := exec.CommandContext(ctx, c.CaoBinPath, "session", "send", targetSession, finalInstruction)
 	if input.Workspace != "" {
 		cmd.Dir = input.Workspace
@@ -438,6 +530,7 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 						if c.CheckTmuxPrompt != nil {
 							if ready, exists := c.CheckTmuxPrompt(ctx, sessionName); exists {
 								if ready {
+									c.deleteSessionRecord(ctx, sessionName)
 									return false, nil
 								}
 								return true, nil

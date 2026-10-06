@@ -143,6 +143,9 @@ func (s *Scheduler) startPollingForAgent(ctx context.Context, col CollaboratorCo
 
 func (s *Scheduler) executeScan(ctx context.Context, col CollaboratorConfig, repo GitLabRepository, token string) {
 	slog.Info("正在輪詢掃描 GitLab Todos...", "agent_id", col.ID)
+	if s.service != nil && s.service.dispatcher != nil {
+		_ = s.service.dispatcher.EnsureSessions(ctx, []CollaboratorConfig{col})
+	}
 	err := s.service.ScanAndAssignForAgent(ctx, col.ID, repo, s.allowedProjects, s.allowedMRAuthors, col.CaoSessionName, token)
 	if err != nil {
 		slog.Error("掃描 GitLab Todos 發生錯誤", "agent_id", col.ID, "error", err)

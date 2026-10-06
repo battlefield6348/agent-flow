@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -162,3 +163,46 @@ func TestCaoDispatcher_EnsureSessions(t *testing.T) {
 		t.Fatalf("EnsureSessions 執行失敗: %v", err)
 	}
 }
+
+func TestCaoDispatcher_AutoRelaunchOnMissingSession(t *testing.T) {
+	// 驗證當 dispatch 遭遇 session missing 錯誤時，能自動呼叫 EnsureSessions 並 retry 派發
+	relaunched := false
+	dispatcher := NewCaoDispatcher("true", "cao-main", "")
+	dispatcher.ServerURL = ""
+	dispatcher.agents = []CollaboratorConfig{
+		{
+			ID:             "reviewer",
+			CaoSessionName: "gitlab-reviewer",
+		},
+	}
+	dispatcher.LauncherFunc = func(ctx context.Context, agent CollaboratorConfig) error {
+		relaunched = true
+		return nil
+	}
+
+	callCount := 0
+	dispatcher.CLISendFunc = func(ctx context.Context, session, instruction, workspace string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return "", fmt.Errorf("未檢測到運作中的 CAO Session (cao-gitlab-reviewer)")
+		}
+		return "success", nil
+	}
+
+	err := dispatcher.DispatchTask(context.Background(), DispatchTaskInput{
+		AgentID:        "reviewer",
+		CaoSessionName: "gitlab-reviewer",
+		Instruction:    "測試自動重啟派發",
+	})
+
+	if err != nil {
+		t.Fatalf("期望自動重啟後 retry 成功，但得到錯誤: %v", err)
+	}
+	if !relaunched {
+		t.Errorf("期望啟動重啟 callback (LauncherFunc)，但未被呼叫")
+	}
+	if callCount != 2 {
+		t.Errorf("期望執行 2 次 send 嘗試，但實際上執行了 %d 次", callCount)
+	}
+}
+
