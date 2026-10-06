@@ -166,6 +166,30 @@ make stop
 
 > ⚠️ `gitlab_token` 會在 Session 啟動時注入環境變數。修改 `config.yaml` 中的 Token 後，請執行 `make stop` 再 `make start` 使其生效。
 
+### 以 Docker 啟動
+
+映像內已安裝 `agent-flow`、CAO (`cao` / `cao-server`)、`tmux`、`glab`、Claude Code 與 Codex CLI；容器啟動時會自動帶起容器內的 `cao-server`，並依 `config.yaml` 建立各 Agent 的 CAO Sessions。
+
+```bash
+make docker-up     # 建置映像並於背景啟動
+make docker-logs   # 追蹤日誌
+make docker-down   # 關閉容器並清理容器內所有 CAO Sessions
+```
+
+容器以與主機相同的 UID/GID 與家目錄路徑執行，並掛載以下主機目錄，因此主機上需先完成各項登入：
+
+| 主機路徑 | 用途 |
+| :--- | :--- |
+| `~/projects` (可用 `AGENT_FLOW_PROJECTS_DIR` 覆寫) | 本專案與 MR 對應的本地 Repo，`configs/config.yaml` 與 `logs/` 也由此讀寫 |
+| `~/.aws/cli-agent-orchestrator/agent-store`、`skills` | CAO Agent Profiles 與 Skills |
+| `~/.claude`、`~/.claude.json`、`~/.codex` | Claude Code / Codex 登入憑證 |
+| `~/.local/bin/agy` (可用 `AGY_BIN` 覆寫)、`~/.gemini` | Antigravity CLI (`cao_provider: agy`) 執行檔與憑證 |
+| `~/.gitconfig`、`~/.git-credentials`、`~/.ssh`、`~/.config/glab-cli` | Git 推送與 `glab` 憑證 |
+
+> ⚠️ 請勿同時執行 `make start` 與 Docker 版本：兩者會重複輪詢同一批 GitLab Todos，並共用 `logs/` 下的資料庫。
+>
+> 💡 CAO 目前的 Google 系 Provider 為 Antigravity CLI (`agy`)，並未支援 Gemini CLI，因此映像中不安裝 `gemini`。
+
 ---
 
 ## 🛠️ 開發與常用指令
@@ -178,6 +202,9 @@ make stop
 | **`make test`** | 執行全套 Golang 單元測試 |
 | **`make fmt`** | 執行程式碼格式化與靜態檢查 (`go fmt` + `go vet`) |
 | **`make build`** | 編譯二進位執行檔 `agent-flow` |
+| **`make docker-up`** | 以 Docker 建置並於背景啟動 Agent Flow |
+| **`make docker-down`** | 關閉 Docker 容器並清理容器內 CAO Sessions |
+| **`make docker-logs`** | 追蹤 Docker 容器日誌 |
 
 ---
 

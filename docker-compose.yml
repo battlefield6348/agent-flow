@@ -1,0 +1,35 @@
+services:
+  agent-flow:
+    build:
+      context: .
+      args:
+        USER_UID: ${AGENT_FLOW_UID:-1000}
+        USER_GID: ${AGENT_FLOW_GID:-1000}
+        USER_HOME: ${HOME}
+    image: agent-flow:latest
+    container_name: agent-flow
+    restart: unless-stopped
+    # agent-flow 收到 SIGTERM 後需要時間關閉所有 CAO Sessions
+    stop_grace_period: 30s
+    environment:
+      HOME: ${HOME}
+    # 工作目錄需位於專案父目錄之下，agent-flow 會掃描父目錄尋找 MR 對應的本地 Repo
+    working_dir: ${AGENT_FLOW_PROJECTS_DIR:-${HOME}/projects}/agent-flow
+    volumes:
+      # 專案目錄 (含本專案的 configs/、logs/、data/)，路徑與主機一致
+      - ${AGENT_FLOW_PROJECTS_DIR:-${HOME}/projects}:${AGENT_FLOW_PROJECTS_DIR:-${HOME}/projects}
+      # CAO Agent Profiles 與 Skills
+      - ${HOME}/.aws/cli-agent-orchestrator/agent-store:${HOME}/.aws/cli-agent-orchestrator/agent-store
+      - ${HOME}/.aws/cli-agent-orchestrator/skills:${HOME}/.aws/cli-agent-orchestrator/skills
+      # Provider CLI 登入憑證與設定
+      - ${HOME}/.claude:${HOME}/.claude
+      - ${HOME}/.claude.json:${HOME}/.claude.json
+      - ${HOME}/.codex:${HOME}/.codex
+      # Antigravity CLI (agy，CAO 的 Google/Gemini provider) 無公開套件，沿用主機執行檔
+      - ${AGY_BIN:-${HOME}/.local/bin/agy}:/usr/local/bin/agy:ro
+      - ${HOME}/.gemini:${HOME}/.gemini
+      # Git / GitLab 憑證
+      - ${HOME}/.gitconfig:${HOME}/.gitconfig:ro
+      - ${HOME}/.git-credentials:${HOME}/.git-credentials:ro
+      - ${HOME}/.ssh:${HOME}/.ssh:ro
+      - ${HOME}/.config/glab-cli:${HOME}/.config/glab-cli

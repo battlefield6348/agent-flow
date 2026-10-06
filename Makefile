@@ -1,4 +1,4 @@
-.PHONY: build start stop setup cao-status clean fmt test check-tools
+.PHONY: build start stop setup cao-status clean fmt test check-tools docker-build docker-up docker-down docker-logs
 
 # 基本變數設定
 BINARY_NAME=agent-flow
@@ -43,3 +43,19 @@ fmt:
 test:
 	@echo "🧪 執行全套單元測試..."
 	@GOTOOLCHAIN=local go test -v ./...
+
+# 以 Docker 建置映像 (UID/GID 與主機使用者一致)
+docker-build:
+	@AGENT_FLOW_UID=$$(id -u) AGENT_FLOW_GID=$$(id -g) docker compose build
+
+# 以 Docker 在背景啟動 Agent Flow (含容器內 cao-server 與 CAO Sessions)
+docker-up:
+	@AGENT_FLOW_UID=$$(id -u) AGENT_FLOW_GID=$$(id -g) docker compose up -d --build
+
+# 關閉容器 (agent-flow 會先清理容器內所有 CAO Sessions)
+docker-down:
+	@docker compose down
+
+# 追蹤容器日誌
+docker-logs:
+	@docker compose logs -f

@@ -1,0 +1,12 @@
+.git
+.worktrees
+.agents
+.codex
+.gemini
+.superpowers
+configs/config.yaml
+data
+docs
+logs
+tasks
+agent-flow
