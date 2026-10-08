@@ -29,7 +29,7 @@ type DispatchTaskInput struct {
 // TaskDispatcher 定義與 Agent 派發工具互動的介面
 type TaskDispatcher interface {
 	DispatchTask(ctx context.Context, input DispatchTaskInput) error
-	IsBusy(ctx context.Context, agentID string) (bool, error)
+	IsBusy(ctx context.Context, sessionName string) (bool, error)
 	EnsureSessions(ctx context.Context, agents []CollaboratorConfig) error
 	ShutdownSessions(ctx context.Context) error
 }
@@ -125,11 +125,25 @@ func (c *CaoDispatcher) EnsureSessions(ctx context.Context, agents []Collaborato
 	activeStr := string(activeOut)
 
 	for _, agent := range agents {
-		if err := c.ensureSingleSession(ctx, agent, activeStr); err != nil {
-			slog.Warn("動態啟動 CAO Session 發生錯誤", "agent_id", agent.ID, "error", err)
+		for _, sessionName := range agent.SessionNames() {
+			replica := agent
+			replica.CaoSessionName = sessionName
+			if err := c.ensureSingleSession(ctx, replica, activeStr); err != nil {
+				slog.Warn("動態啟動 CAO Session 發生錯誤", "agent_id", agent.ID, "session", sessionName, "error", err)
+			}
 		}
 	}
 	return nil
+}
+
+// sessionListed 以完整欄位比對 Session 名稱，避免 cao-gitlab-reviewer-1 因 cao-gitlab-reviewer-10 存在而被誤判為已啟動
+func sessionListed(listOutput, sessionName string) bool {
+	for _, field := range strings.Fields(listOutput) {
+		if field == sessionName {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeAgents 依 ID 合併代理人設定，避免單一代理人輪詢時覆蓋掉其他代理人的設定
@@ -163,7 +177,7 @@ func (c *CaoDispatcher) ensureSingleSession(ctx context.Context, agent Collabora
 	}
 	sessionName = formatSessionName(sessionName)
 
-	if activeStr != "" && strings.Contains(activeStr, sessionName) {
+	if sessionListed(activeStr, sessionName) {
 		slog.Info("CAO Session 已在運作中", "session", sessionName, "agent_id", agent.ID)
 		return nil
 	}
@@ -172,9 +186,9 @@ func (c *CaoDispatcher) ensureSingleSession(ctx context.Context, agent Collabora
 
 	profile := agent.CaoAgentProfile
 	if profile == "" {
-		if agent.ID == "reviewer" {
+		if agent.EffectiveRole() == RoleReviewer {
 			profile = "review_supervisor"
-		} else if agent.ID == "coder" {
+		} else if agent.EffectiveRole() == RoleCoder {
 			profile = "code_supervisor"
 		} else {
 			profile = "developer"
@@ -270,10 +284,13 @@ func (c *CaoDispatcher) DispatchTask(ctx context.Context, input DispatchTaskInpu
 		agentConfig, found := c.findAgentConfig(input.AgentID, input.CaoSessionName)
 		if !found {
 			agentConfig = CollaboratorConfig{
-				ID:             input.AgentID,
-				CaoSessionName: input.CaoSessionName,
-				GitLabToken:    input.GitLabToken,
+				ID:          input.AgentID,
+				GitLabToken: input.GitLabToken,
 			}
+		}
+		// 依 ID 找到的是整個 pool 的設定，重啟時必須針對實際派發失敗的那個 Session
+		if input.CaoSessionName != "" {
+			agentConfig.CaoSessionName = input.CaoSessionName
 		}
 
 		slog.Warn("檢測到 CAO Session 不存在，嘗試自動重啟中...", "agent_id", input.AgentID, "session", input.CaoSessionName)
@@ -495,19 +512,19 @@ func (c *CaoDispatcher) dispatchViaCLI(ctx context.Context, input DispatchTaskIn
 	return fmt.Errorf("cao session send 失敗: %w, 輸出: %s", err, outputStr)
 }
 
-func (c *CaoDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error) {
+func (c *CaoDispatcher) IsBusy(ctx context.Context, sessionName string) (bool, error) {
 	if c.ServerURL != "" {
-		busy, err := c.isBusyViaHTTP(ctx, agentID)
+		busy, err := c.isBusyViaHTTP(ctx, sessionName)
 		if err == nil {
 			return busy, nil
 		}
 		slog.Warn("透過 cao-server 檢查狀態失敗，降級使用 CLI 檢查", "error", err)
 	}
 
-	return c.isBusyViaCLI(ctx, agentID)
+	return c.isBusyViaCLI(ctx, sessionName)
 }
 
-func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool, error) {
+func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, requestedSession string) (bool, error) {
 	var sessionNames []string
 	if c.Mode == ModeSupervisor {
 		if c.SessionName != "" {
@@ -517,14 +534,8 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 			sessionNames = append(sessionNames, active)
 		}
 	} else {
-		if c.SessionName != "" {
-			sessionNames = append(sessionNames, c.SessionName)
-		}
-		sessionNames = append(sessionNames,
-			fmt.Sprintf("cao-gitlab-%s", agentID),
-			fmt.Sprintf("gitlab-%s", agentID),
-			agentID,
-		)
+		// 只檢查指定的 Session；若先檢查預設 Session，它閒置時會讓 pool 中忙碌的 Session 被誤判為閒置
+		sessionNames = append(sessionNames, c.getTargetSessionName(ctx, requestedSession))
 	}
 
 	for _, sessionName := range sessionNames {
@@ -600,8 +611,8 @@ func (c *CaoDispatcher) isBusyViaHTTP(ctx context.Context, agentID string) (bool
 	return false, nil
 }
 
-func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, agentID string) (bool, error) {
-	targetSession := c.getTargetSessionName(ctx, "")
+func (c *CaoDispatcher) isBusyViaCLI(ctx context.Context, requestedSession string) (bool, error) {
+	targetSession := c.getTargetSessionName(ctx, requestedSession)
 
 	if c.CheckTmuxPrompt != nil {
 		if ready, exists := c.CheckTmuxPrompt(ctx, targetSession); exists {

@@ -26,8 +26,8 @@ type Scheduler struct {
 func NewScheduler(service *OrchestratorService, interval time.Duration, allowedProjects, allowedAuthors []string, collaborators []CollaboratorConfig, gitlabURL, gitlabToken string) *Scheduler {
 	if collaborators == nil {
 		collaborators = []CollaboratorConfig{
-			{ID: "reviewer", CaoSessionName: "gitlab-reviewer"},
-			{ID: "coder", CaoSessionName: "gitlab-coder"},
+			{ID: "reviewer", Role: RoleReviewer, CaoSessionName: "gitlab-reviewer"},
+			{ID: "coder", Role: RoleCoder, CaoSessionName: "gitlab-coder"},
 		}
 	}
 	return &Scheduler{
@@ -48,6 +48,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Unlock()
 	slog.Info("啟動多 Agent 背景輪詢服務", "agent_count", len(s.collaborators), "interval", s.interval)
 	for _, col := range s.collaborators {
+		if col.Replicas > 1 && col.PoolSize() == 1 {
+			slog.Warn("coder 共用本機 Repo 目錄，不支援多個 Session，replicas 將以 1 執行", "agent_id", col.ID, "replicas", col.Replicas)
+		}
 		if err := s.StartAgent(col); err != nil {
 			slog.Error("啟動 Agent 輪詢失敗", "agent_id", col.ID, "error", err)
 		}
@@ -146,7 +149,7 @@ func (s *Scheduler) executeScan(ctx context.Context, col CollaboratorConfig, rep
 	if s.service != nil && s.service.dispatcher != nil {
 		_ = s.service.dispatcher.EnsureSessions(ctx, []CollaboratorConfig{col})
 	}
-	err := s.service.ScanAndAssignForAgent(ctx, col.ID, repo, s.allowedProjects, s.allowedMRAuthors, col.CaoSessionName, token)
+	err := s.service.ScanAndAssign(ctx, col, repo, s.allowedProjects, s.allowedMRAuthors, token)
 	if err != nil {
 		slog.Error("掃描 GitLab Todos 發生錯誤", "agent_id", col.ID, "error", err)
 	}

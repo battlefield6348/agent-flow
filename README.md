@@ -126,17 +126,29 @@ allowed_mr_authors:
 # 自由定義 Agent 角色、專屬 Token、目標 Session 名稱、Agent Profile 與 Provider
 agents:
   - id: "reviewer"
+    role: "reviewer"                            # 角色：reviewer 或 coder (未填時沿用 id)
+    replicas: 3                                 # Session 數量，MR 會分流給閒置的 Session (建立 gitlab-reviewer-1 ~ 3)
     gitlab_token: "glpat-reviewer-token-xxxxxx"
     cao_session_name: "gitlab-reviewer"         # 自訂 Session 名稱
     cao_agent_profile: "review_supervisor"      # 自訂 CAO Agent Profile
     cao_provider: "antigravity_cli"             # 自訂 Provider (相容 agy, kiro_cli, codex 等)
 
   - id: "coder"
+    role: "coder"                               # coder 共用本機 Repo，固定只會建立 1 個 Session
     gitlab_token: "glpat-coder-token-yyyyyy"
     cao_session_name: "gitlab-coder"            # 自訂 Session 名稱
     cao_agent_profile: "code_supervisor"        # 自訂 CAO Agent Profile
     cao_provider: "codex"                       # 自訂 Provider
 ```
+
+### 3. Reviewer 分流 (Session Pool)
+
+同一個 Agent 設定 `replicas: N` 後，會由單一輪詢迴圈抓取該帳號的 Todos，再分派給 `<cao_session_name>-1` ~ `-N` 中閒置的 Session：
+
+- 全部 Session 都忙碌時，剩餘 Todo 會保留在 GitLab，下一輪輪詢再處理。
+- 同一張 MR 仍在某個 Session 處理中時，新的 Todo 會延後，不會同時派給另一個 Session。
+- `replicas` 未設定或為 1 時沿用原本的 Session 名稱，既有部署不受影響。
+- 每個 Session 都是一個獨立的 AI CLI 進程，請依 Provider 的 Rate Limit 與費用調整數量，建議從 2 ~ 3 開始。
 
 ---
 

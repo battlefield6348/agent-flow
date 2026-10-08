@@ -8,11 +8,6 @@ import (
 	"sync"
 )
 
-const (
-	coderAgentID    = "coder"
-	reviewerAgentID = "reviewer"
-)
-
 // GitLabRepository 定義與 GitLab 交互的介面 (Port)
 type GitLabRepository interface {
 	FetchPendingTodos(ctx context.Context) ([]Todo, error)
@@ -34,6 +29,15 @@ type OrchestratorService struct {
 	dispatcher     TaskDispatcher
 	checkCISuccess bool
 	mu             sync.RWMutex
+	inFlightMu     sync.Mutex
+	inFlight       map[inFlightKey]string
+}
+
+// inFlightKey 識別某個 Agent 正在處理的 MR，用來避免同一張 MR 被 pool 中的另一個 Session 重複處理
+type inFlightKey struct {
+	agentID string
+	project string
+	mrIID   int
 }
 
 func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, dispatcher TaskDispatcher) *OrchestratorService {
@@ -41,6 +45,7 @@ func NewOrchestratorService(gl GitLabRepository, ws WorkspaceRepository, dispatc
 		gitlabRepo:    gl,
 		workspaceRepo: ws,
 		dispatcher:    dispatcher,
+		inFlight:      make(map[inFlightKey]string),
 	}
 }
 
@@ -49,6 +54,7 @@ func NewOrchestratorServiceWithDispatcher(gl GitLabRepository, ws WorkspaceRepos
 		gitlabRepo:    gl,
 		workspaceRepo: ws,
 		dispatcher:    dispatcher,
+		inFlight:      make(map[inFlightKey]string),
 	}
 }
 
@@ -64,8 +70,11 @@ func (s *OrchestratorService) CheckCISuccess() bool {
 	return s.checkCISuccess
 }
 
-// ScanAndAssignForAgent 針對特定的 Agent 執行掃描與任務分派的核心業務邏輯
-func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID string, repo GitLabRepository, allowedProjects, allowedAuthors []string, caoSessionName string, gitlabToken string) error {
+// ScanAndAssign 針對特定的 Agent 執行掃描，並將任務分派給該 Agent Session pool 中閒置的 Session
+func (s *OrchestratorService) ScanAndAssign(ctx context.Context, col CollaboratorConfig, repo GitLabRepository, allowedProjects, allowedAuthors []string, gitlabToken string) error {
+	agentID := col.ID
+	role := col.EffectiveRole()
+	sessions := col.SessionNames()
 	slog.Debug("Scanning GitLab Todos", "agent_id", agentID)
 	todos, err := repo.FetchPendingTodos(ctx)
 	if err != nil {
@@ -85,6 +94,30 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 	}
 	dispatchedMRs := make(map[mrKey]bool)
 	evaluatedMRs := make(map[mrKey]bool)
+	// CAO 的終端狀態在送出任務後不會立即轉為忙碌，因此本輪已派發過的 Session 也視為不可用
+	unavailable := make(map[string]bool)
+	isBusy := func(session string) bool {
+		if unavailable[session] {
+			return true
+		}
+		if s.dispatcher == nil {
+			return false
+		}
+		busy, err := s.dispatcher.IsBusy(ctx, session)
+		if err == nil && busy {
+			unavailable[session] = true
+			return true
+		}
+		return false
+	}
+	pickIdleSession := func() string {
+		for _, session := range sessions {
+			if !isBusy(session) {
+				return session
+			}
+		}
+		return ""
+	}
 
 	for _, todo := range todos {
 		mr := todo.MergeRequest
@@ -118,12 +151,19 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 			continue
 		}
 
-		if s.dispatcher != nil {
-			busy, err := s.dispatcher.IsBusy(ctx, agentID)
-			if err == nil && busy {
-				slog.Info("Agent dispatcher is busy, postponing MR", "agent_id", agentID, "mr_iid", mr.IID)
+		flightKey := inFlightKey{agentID: agentID, project: projectPath, mrIID: mr.IID}
+		if session, ok := s.inFlightSession(flightKey); ok {
+			if isBusy(session) {
+				slog.Info("MR is still being handled by another session, postponing", "agent_id", agentID, "mr_iid", mr.IID, "session", session)
 				continue
 			}
+			s.clearInFlight(flightKey)
+		}
+
+		targetSession := pickIdleSession()
+		if targetSession == "" {
+			slog.Info("All agent sessions are busy, postponing MR", "agent_id", agentID, "mr_iid", mr.IID)
+			continue
 		}
 
 		var latestStatus string
@@ -145,13 +185,13 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		ciFailed := isCIFailed(latestStatus)
 
-		if agentID == reviewerAgentID && ciFailed {
+		if role == RoleReviewer && ciFailed {
 			slog.Info("CI pipeline failed, skipping reviewer assignment", "mr_iid", mr.IID, "status", latestStatus)
 			continue
 		}
 
 		isCiRepairTask := false
-		if agentID == coderAgentID {
+		if role == RoleCoder {
 			if ciFailed {
 				isCiRepairTask = true
 			} else {
@@ -171,7 +211,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		// Reviewer 僅透過 GitLab API 審查 MR，只有需要修改程式的 Agent 才需要本機 Repo
 		var localPath string
-		if agentID != reviewerAgentID {
+		if role != RoleReviewer {
 			localPath, err = s.workspaceRepo.FindLocalPath(ctx, projectPath)
 			if err != nil {
 				slog.Error("Error locating local workspace", "project", projectPath, "error", err)
@@ -181,7 +221,7 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 
 		if s.dispatcher != nil {
 			var instruction string
-			if agentID == reviewerAgentID {
+			if role == RoleReviewer {
 				instruction = fmt.Sprintf("請開始評審 Merge Request %d。網址為：%s", mr.IID, mr.WebURL)
 			} else if isCiRepairTask {
 				instruction = fmt.Sprintf("CI 建置/測試失敗 (Pipeline 狀態: %s)，請檢查 CI 錯誤日誌並於同一個 Merge Request 分支完成修正，完成後發表以「## 修正回覆」開頭的留言。Merge Request %d。網址為：%s", latestStatus, mr.IID, mr.WebURL)
@@ -198,14 +238,16 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 				Instruction:    instruction,
 				MRIID:          mr.IID,
 				MRWebURL:       mr.WebURL,
-				CaoSessionName: caoSessionName,
+				CaoSessionName: targetSession,
 				GitLabToken:    gitlabToken,
 			})
 			if err != nil {
-				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "error", err)
+				slog.Error("Failed to dispatch task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "session", targetSession, "error", err)
 			} else {
-				slog.Info("Successfully dispatched task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID)
+				slog.Info("Successfully dispatched task via TaskDispatcher", "agent_id", agentID, "mr_iid", mr.IID, "session", targetSession)
 				dispatchedMRs[key] = true
+				unavailable[targetSession] = true
+				s.markInFlight(flightKey, targetSession)
 				if err := repo.MarkTodoAsDone(ctx, todo.ID); err != nil {
 					slog.Error("Failed to mark Todo as done after dispatch", "todo_id", todo.ID, "error", err)
 				} else {
@@ -219,6 +261,25 @@ func (s *OrchestratorService) ScanAndAssignForAgent(ctx context.Context, agentID
 	}
 
 	return nil
+}
+
+func (s *OrchestratorService) inFlightSession(key inFlightKey) (string, bool) {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	session, ok := s.inFlight[key]
+	return session, ok
+}
+
+func (s *OrchestratorService) markInFlight(key inFlightKey, session string) {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	s.inFlight[key] = session
+}
+
+func (s *OrchestratorService) clearInFlight(key inFlightKey) {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	delete(s.inFlight, key)
 }
 
 func hasRequestedChanges(notes []Note) bool {

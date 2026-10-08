@@ -16,12 +16,15 @@ allowed_mr_authors:
 # 完全由使用者在 config 中自由決定 Agent 識別碼、Session 名稱、Agent Profile 與 Provider
 agents:
   - id: "reviewer"
+    role: "reviewer"                            # 角色：reviewer 或 coder (未填時沿用 id)
+    replicas: 3                                 # Session 數量，MR 會分流給閒置的 Session (建立 gitlab-reviewer-1 ~ 3)
     gitlab_token: "glpat-reviewer-token-xxxxxx"
     cao_session_name: "gitlab-reviewer"         # 自訂要建立/對接的 CAO Session 名稱
     cao_agent_profile: "review_supervisor"      # 自訂 CAO Agent Profile (如 review_supervisor, developer)
     cao_provider: "kiro_cli"                    # 自訂 AI Provider (如 codex, kiro_cli, claude_code)
 
   - id: "coder"
+    role: "coder"                               # coder 共用本機 Repo，固定只會建立 1 個 Session
     gitlab_token: "glpat-coder-token-yyyyyy"
     cao_session_name: "gitlab-coder"            # 自訂要建立/對接的 CAO Session 名稱
     cao_agent_profile: "code_supervisor"        # 自訂 CAO Agent Profile

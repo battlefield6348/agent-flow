@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -23,12 +24,12 @@ func (m *MockTaskDispatcher) DispatchTask(ctx context.Context, input DispatchTas
 	return nil
 }
 
-func (m *MockTaskDispatcher) IsBusy(ctx context.Context, agentID string) (bool, error) {
+func (m *MockTaskDispatcher) IsBusy(ctx context.Context, sessionName string) (bool, error) {
 	if m.IsBusyErr != nil {
 		return false, m.IsBusyErr
 	}
 	if m.BusyMap != nil {
-		return m.BusyMap[agentID], nil
+		return m.BusyMap[sessionName], nil
 	}
 	return false, nil
 }
@@ -94,7 +95,7 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 
 		dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
 		dispatcher.CheckTmuxPrompt = nil
-		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
+		busy, err := dispatcher.IsBusy(context.Background(), "cao-gitlab-reviewer")
 		if err != nil {
 			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
 		}
@@ -122,7 +123,7 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 		dispatcher.CheckTmuxPrompt = func(ctx context.Context, sessionName string) (bool, bool) {
 			return true, true
 		}
-		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
+		busy, err := dispatcher.IsBusy(context.Background(), "cao-gitlab-reviewer")
 		if err != nil {
 			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
 		}
@@ -147,7 +148,7 @@ func TestCaoDispatcher_HTTP(t *testing.T) {
 
 		dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
 		dispatcher.CheckTmuxPrompt = nil
-		busy, err := dispatcher.IsBusy(context.Background(), "reviewer")
+		busy, err := dispatcher.IsBusy(context.Background(), "cao-gitlab-reviewer")
 		if err != nil {
 			t.Fatalf("期望 HTTP 狀態檢查成功，但得到錯誤: %v", err)
 		}
@@ -232,5 +233,90 @@ func TestCaoDispatcher_EnsureSessionsMergesAgents(t *testing.T) {
 	}
 	if _, found := dispatcher.findAgentConfig("coder", ""); !found {
 		t.Errorf("期望 coder 設定仍存在，但找不到")
+	}
+}
+
+func TestCaoDispatcher_IsBusyChecksRequestedSession(t *testing.T) {
+	// 預設 Session (cao-main) 閒置不代表 pool 中指定的 Session 也閒置
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions/cao-main":
+			_, _ = w.Write([]byte(`{"session":{"id":"cao-main"},"terminals":[{"id":"t0","status":"idle"}]}`))
+		case "/sessions/cao-gitlab-reviewer-2":
+			_, _ = w.Write([]byte(`{"session":{"id":"cao-gitlab-reviewer-2"},"terminals":[{"id":"t2","status":"processing"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dispatcher := NewCaoDispatcher("invalid-cli-path", "cao-main", server.URL)
+	dispatcher.CheckTmuxPrompt = nil
+	busy, err := dispatcher.IsBusy(context.Background(), "cao-gitlab-reviewer-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy {
+		t.Errorf("期望 cao-gitlab-reviewer-2 為忙碌，但得到閒置")
+	}
+}
+
+func TestCaoDispatcher_EnsureSessionsLaunchesReplicas(t *testing.T) {
+	dispatcher := NewCaoDispatcher("true", "cao-main", "")
+	var launched []string
+	dispatcher.LauncherFunc = func(ctx context.Context, agent CollaboratorConfig) error {
+		launched = append(launched, agent.CaoSessionName)
+		return nil
+	}
+
+	agents := []CollaboratorConfig{{ID: "reviewer", CaoSessionName: "gitlab-reviewer", Replicas: 3}}
+	if err := dispatcher.EnsureSessions(context.Background(), agents); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cao-gitlab-reviewer-1", "cao-gitlab-reviewer-2", "cao-gitlab-reviewer-3"}
+	if !reflect.DeepEqual(launched, want) {
+		t.Errorf("啟動的 Session = %v, want %v", launched, want)
+	}
+}
+
+func TestCaoDispatcher_RelaunchUsesReplicaSessionName(t *testing.T) {
+	dispatcher := NewCaoDispatcher("true", "cao-main", "")
+	dispatcher.ServerURL = ""
+	dispatcher.agents = []CollaboratorConfig{{ID: "reviewer", CaoSessionName: "gitlab-reviewer", Replicas: 3, CaoAgentProfile: "review_supervisor"}}
+
+	var relaunched CollaboratorConfig
+	dispatcher.LauncherFunc = func(ctx context.Context, agent CollaboratorConfig) error {
+		relaunched = agent
+		return nil
+	}
+	callCount := 0
+	dispatcher.CLISendFunc = func(ctx context.Context, session, instruction, workspace string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return "", fmt.Errorf("未檢測到運作中的 CAO Session (%s)", session)
+		}
+		return "success", nil
+	}
+
+	err := dispatcher.DispatchTask(context.Background(), DispatchTaskInput{
+		AgentID:        "reviewer",
+		CaoSessionName: "cao-gitlab-reviewer-2",
+		Instruction:    "測試",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relaunched.CaoSessionName != "cao-gitlab-reviewer-2" || relaunched.CaoAgentProfile != "review_supervisor" {
+		t.Errorf("應以原設定重啟 cao-gitlab-reviewer-2，但得到 %+v", relaunched)
+	}
+}
+
+func TestSessionListed(t *testing.T) {
+	list := "cao-gitlab-reviewer-10  idle\ncao-gitlab-coder  processing\n"
+	if sessionListed(list, "cao-gitlab-reviewer-1") {
+		t.Error("cao-gitlab-reviewer-1 不應因前綴相同而被視為已啟動")
+	}
+	if !sessionListed(list, "cao-gitlab-reviewer-10") || !sessionListed(list, "cao-gitlab-coder") {
+		t.Error("已列出的 Session 應被視為已啟動")
 	}
 }
